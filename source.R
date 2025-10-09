@@ -113,7 +113,10 @@ VECM_ADMM = function(Y,rho,lambda_L1,lambda_L2,lambda_F,A_init=NULL,B_init=NULL,
   
   #Compute weights
   if(adaptive){
-    omegas = 1/eigen(crossprod(Y)/t^2)$values
+    eigen_values = eigen(crossprod(Y)/t^2)$values
+    omegas = 1/eigen_values
+    # eigen_sums = cumsum(eigen_values[n:1])[n:1]
+    # omegas = 1/eigen_sums
   }else{
     omegas=rep(1,n)
   }
@@ -165,8 +168,10 @@ VECM_ADMM = function(Y,rho,lambda_L1,lambda_L2,lambda_F,A_init=NULL,B_init=NULL,
       A_kp1_sums[,j:n] = A_kp1_sums[,j:n] + As_kp1[[j+3]]
       B_kp1_sums[,j:n] = B_kp1_sums[,j:n] + Bs_kp1[[j+3]]
     }
-    As_kp1$A = softt_matrix(A_kp1_sums,lambda_L1/rho)%*%W_j
-    Bs_kp1$B = softt_matrix(B_kp1_sums,lambda_L1/rho)%*%W_j
+    # As_kp1$A = softt_matrix(A_kp1_sums,lambda_L1/rho)%*%W_j
+    # Bs_kp1$B = softt_matrix(B_kp1_sums,lambda_L1/rho)%*%W_j
+    As_kp1$A = softt_matrix(A_kp1_sums%*%W_j,lambda_L1/rho)
+    Bs_kp1$B = softt_matrix(B_kp1_sums%*%W_j,lambda_L1/rho)
     
     #Update MA and MB
     MAs_kp1$MA_LS = MAs_k$MA_LS + rho*(As_kp1$A_LS - As_kp1$A)
@@ -207,6 +212,7 @@ VECM_ADMM = function(Y,rho,lambda_L1,lambda_L2,lambda_F,A_init=NULL,B_init=NULL,
     r_hat = n
   }
   
-  list(A = As_kp1$A,B = Bs_kp1$B, As = As_kp1, Bs = Bs_kp1,r = r_hat,
+  list(A = As_kp1$A,B = Bs_kp1$B, As = As_kp1, Bs = Bs_kp1,
+       r = r_hat,omegas=omegas,
        losses = loss_vec,improvements = loss_diff_vec,iterations = counter)
 }
