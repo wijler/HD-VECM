@@ -4,6 +4,16 @@ library(urca)
 source("source.R")
 
 #Miscellaneous functions
+softt_matrix = function(X,lambda,omegas=NULL){
+  X_sign = sign(X)
+  if(is.null(omegas)){
+    X_tmp = abs(X)-lambda
+  }else{
+    X_tmp = abs(X)-lambda*omegas
+  }
+  X_tmp[X_tmp<0] = 0
+  X_sign*X_tmp
+}
 generate_VECM = function(n,t,burnin,A,B){
   
   t_total = t+burnin
@@ -35,9 +45,9 @@ BIC_value = function(Y,A,B){
 }
 
 #Functions to update C
-prox_nuclear = function(X,lambda){
+prox_nuclear = function(X,lambda,omegas){
   X_svd = svd(X)
-  d_softt = softt_matrix(X_svd$d,lambda)
+  d_softt = softt_matrix(X_svd$d,lambda,omegas)
   X_new = X_svd$u%*%diag(d_softt)%*%t(X_svd$v)
   list(X_new=X_new,d=d_softt)
 }
@@ -45,7 +55,7 @@ C_loss = function(C,U,DY,Y_lag,rho){
   sum((DY - Y_lag%*%t(C))^2)/nrow(Y_lag) + 
     rho*sum((C-U)^2)/2
 }
-C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,rho,
+C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,omegas,rho,
                       step_init=1,step_mult=0.5,step_max_iter = 1000){
   t = nrow(Y_lag)
   step_size = step_init/step_mult
@@ -56,7 +66,7 @@ C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,rho,
     step_size = step_mult*step_size
     step_lambda = step_size*lambda
     C_tmp = C - step_size*nabla_C
-    C_prox_nuclear = prox_nuclear(C_tmp,step_lambda)
+    C_prox_nuclear = prox_nuclear(C_tmp,step_lambda,omegas)
     C_new = C_prox_nuclear$X_new
     G_new = (C - C_new)/step_size
     g_new = C_loss(C_new,U,DY,Y_lag,rho)
@@ -68,7 +78,7 @@ C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,rho,
   list(step_size=step_size,C_new=C_new,d=C_prox_nuclear$d,
        step_iterations=count)
 }
-C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,rho,
+C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,omegas,rho,
                   step_size="auto",step_init=1,step_mult=0.5,
                   step_max_iter=100,max_iter = 1000,thresh=1e-6){
   
@@ -83,7 +93,7 @@ C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,rho,
       
       #Compute step size
       step_size_obj = C_step_size(C_old,nabla_C,U,DY,Y_lag,
-                                  lambda,rho,step_init,
+                                  lambda,omegas,rho,step_init,
                                   step_mult,step_max_iter)
       C_new = step_size_obj$C_new
       d_new = step_size_obj$d
@@ -92,7 +102,7 @@ C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,rho,
       
       step_lambda = step_size*lambda
       C_tmp = C_old - step_size*nabla_C
-      C_prox_obj = prox_nuclear(C_tmp,step_lambda)
+      C_prox_obj = prox_nuclear(C_tmp,step_lambda,omegas)
       C_new = C_prox_obj$X_new
       d_new = C_prox_obj$d
     }
@@ -112,12 +122,6 @@ C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,rho,
 }
 
 #Functions to update A and B
-softt_matrix = function(X,lambda){
-  X_sign = sign(X)
-  X_tmp = abs(X)-lambda
-  X_tmp[X_tmp<0] = 0
-  X_sign*X_tmp
-}
 prox_L2 = function(x,n,lambda,omegas){
   n2 = 2*n
   for(j in 1:n){
@@ -288,7 +292,7 @@ VECM_nuclear = function(C_init,A_init,B_init,M_init,Y,
     U = AB_old - M_old/rho_new
     C_update = C_prox(C_old,U,Y_diff,Y_lag,
                       Y_lag_cross,DY_Y_lag,
-                      lambda_nuclear,rho_new,
+                      lambda_nuclear,omegas,rho_new,
                       step_size,step_init,step_mult,
                       step_max_iter,max_iter,C_thresh)
     C_new = C_update$C
@@ -372,11 +376,10 @@ M_init = matrix(0,nrow(A_Johan),nrow(A_Johan))
 rho = 0.001
 lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=30))
 n_lambdas = length(lambda_L2_grid)
-coefs = array(NA,dim=c(n,n,4,n_lambdas,2),
+coefs = array(NA,dim=c(n,n,4,n_lambdas),
               dimnames = list(row=1:n,col=1:n,
                               mat=c("C","A","B","M"),
-                              lambda = lambda_L2_grid,
-                              penalty=c("L2","L2_L1")))
+                              lambda = lambda_L2_grid))
 BICs = r_C = r_AB = rep(0,n_lambdas)
 PI_MSEs = BICs
 C_init = C_Johan; A_init = A_Johan; B_init = B_Johan
@@ -421,18 +424,18 @@ VECM_NN_L2_L1 = VECM_nuclear(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
                              ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
                          
 VECM_NN_L2 = VECM_nuclear(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
-                          M_init = M_init,Y = Y,lambda_nuclear = 0.01,
+                          M_init = M_init,Y = Y,lambda_nuclear = 0.3,
                           lambda_L2 = 0.0001,lambda_L1 = NULL,
-                          rho = "auto",rho_init=0.1,rho_mult = 0.5,mu=10,
+                          rho = 0.01,rho_init=0.1,rho_mult = 0.5,mu=10,
                           step_size = "auto",step_init = 1,step_mult = 0.5,
                           step_max_iter = 100,max_iter = 1000,
-                          ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-4)
-                         
+                          ADMM_thresh = 1e-5,C_thresh = 1e-5,AB_thresh = 1e-5)
+VECM_NN_L2$d                         
              
 #Compute losses
-# A_hat1 = VECM_NN_L2$A
-# B_hat1 = VECM_NN_L2$B
-# AB_hat1 = VECM_NN_L2$A%*%t(VECM_NN_L2$B)
+A_hat1 = VECM_NN_L2$A
+B_hat1 = VECM_NN_L2$B
+AB_hat1 = VECM_NN_L2$A%*%t(VECM_NN_L2$B)
 A_norm1 = A_hat1*A[1,1]/A_hat1[1,1]
 B_norm1 = B_hat1*A_hat1[1,1]/A[1,1]
 
