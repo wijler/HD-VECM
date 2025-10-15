@@ -68,11 +68,15 @@ prox_L2_L1 = function(x,n,lambda_L2,lambda_L1,omegas){
   }
   x
 }
-AB_loss = function(DY,Y_lag,AB){
-  sum((DY-Y_lag%*%t(AB))^2)/nrow(Y_lag)
+AB_loss = function(DY,Y_lag,AB,lambda_R,A=NULL,B=NULL){
+  loss = sum((DY-Y_lag%*%t(AB))^2)/nrow(Y_lag)
+  if(lambda_R>0){
+     loss = loss + lambda_R*(sum(A^2)+sum(B^2))
+  }
+  loss
 }
 AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
-                        lambda_L2,lambda_L1=NULL,
+                        lambda_L2,lambda_L1=0,lambda_R=0,
                         omegas,step_init=1,step_mult=0.5,
                         max_iter = 1000){
   
@@ -82,7 +86,7 @@ AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
   ind_A = c(sapply(1:n,function(j) 1:n + (j-1)*n2))
   ind_B = ind_A + n
   nabla_c = c(rbind(nabla_A,nabla_B))
-  g_old = AB_loss(DY,Y_lag,AB)
+  g_old = AB_loss(DY,Y_lag,AB,lambda_R,A,B)
   step_size = step_init/step_mult
   count = 0
   while(TRUE){
@@ -92,7 +96,7 @@ AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
     c_tmp = c - step_size*nabla_c
     
     #proximal update
-    if(is.null(lambda_L1)){
+    if(lambda_L1==0){
       c_new = prox_L2(c_tmp,n,step_lambda_L2,omegas)
     }else{
       step_lambda_L1 = step_size*lambda_L1
@@ -106,7 +110,7 @@ AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
     
     #Backtracking line search
     G_new = (c - c_new)/step_size
-    g_new = AB_loss(DY,Y_lag,AB_new)
+    g_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
     LB = g_old - step_size*t(nabla_c)%*%G_new + step_size*sum(G_new^2)/2
     if(!(g_new > LB)){
       step_convergence = 0
@@ -122,7 +126,7 @@ AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
 }
 
 VECM_SG = function(A,B,Y,
-                   lambda_L2,lambda_L1=NULL,omegas,
+                   lambda_L2,lambda_L1=0,lambda_R=0,omegas,
                    step_size="auto",step_init=1,step_mult=0.5,
                    step_max_iter=100,
                    max_iter=1000,thresh=1e-5,
@@ -144,16 +148,26 @@ VECM_SG = function(A,B,Y,
   AB_new = A%*%t(B)
   iterations=0
   while(TRUE){
+    
+    #Update old coefficients
     A_old = A_new
     B_old = B_new
     AB_old = AB_new
-    nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old
-    nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
+    
+    #Update gradient
+    if(lambda_R > 0){
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old + 2*lambda_R*A_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old + 2*lambda_R*B_old
+    }else{
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
+    }
+    
     if(step_size == "auto"){
       
       AB_step_size_obj = AB_step_size(DY,Y_lag,
                                       A_old,B_old,nabla_A,nabla_B,
-                                      lambda_L2,lambda_L1,omegas,
+                                      lambda_L2,lambda_L1,lambda_R,omegas,
                                       step_init,step_mult,step_max_iter)
                    
       A_new = AB_step_size_obj$A_new
@@ -295,7 +309,7 @@ lambda_L2=0.2;lambda_L1=NULL;
 step_size = "auto";step_init=1;step_mult=0.5
 step_max_iter=100;max_iter = 1000;thresh=1e-4
 test = VECM_SG(A=A_Johan,B=B_Johan,
-               Y=Y,lambda_L2=0.1,lambda_L1=0.1,
+               Y=Y,lambda_L2=0.1,lambda_L1=0.1,,lambda_R=0,
                step_size = "auto",step_init=1,step_mult=0.5,
                step_max_iter=100,max_iter = 1000,thresh=1e-5,
                print_dist=T)
