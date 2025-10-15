@@ -34,83 +34,6 @@ BIC_value = function(Y,A,B){
    + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
 }
 
-#Functions to update C
-prox_nuclear = function(X,lambda){
-  X_svd = svd(X)
-  d_softt = softt_matrix(X_svd$d,lambda)
-  X_new = X_svd$u%*%diag(d_softt)%*%t(X_svd$v)
-  list(X_new=X_new,d=d_softt)
-}
-C_loss = function(C,U,DY,Y_lag,rho){
-  sum((DY - Y_lag%*%t(C))^2)/nrow(Y_lag) + 
-    rho*sum((C-U)^2)/2
-}
-C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,rho,
-                      step_init=1,step_mult=0.5,step_max_iter = 1000){
-  t = nrow(Y_lag)
-  step_size = step_init/step_mult
-  g_old = C_loss(C,U,DY,Y_lag,rho)
-  count = 0
-  while(TRUE){
-    count = count+1
-    step_size = step_mult*step_size
-    step_lambda = step_size*lambda
-    C_tmp = C - step_size*nabla_C
-    C_prox_nuclear = prox_nuclear(C_tmp,step_lambda)
-    C_new = C_prox_nuclear$X_new
-    G_new = (C - C_new)/step_size
-    g_new = C_loss(C_new,U,DY,Y_lag,rho)
-    LB = g_old - step_size*sum(nabla_C*G_new) + step_size*sum(G_new^2)/2
-    if(!(g_new > LB) | count> step_max_iter){
-      break
-    }
-  }
-  list(step_size=step_size,C_new=C_new,d=C_prox_nuclear$d,
-       step_iterations=count)
-}
-C_prox = function(C,U,DY,Y_lag,YY,DYY,lambda,rho,
-                  step_size="auto",step_init=1,step_mult=0.5,
-                  step_max_iter=100,max_iter = 1000,thresh=1e-6){
-  
-  C_new = C
-  n_par = nrow(C)^2
-  iterations = 0
-  while(TRUE){
-    C_old = C_new
-    nabla_C = 2*(C_old%*%YY - DYY) + rho*(C_old - U)
-    
-    if(step_size == "auto"){
-      
-      #Compute step size
-      step_size_obj = C_step_size(C_old,nabla_C,U,DY,Y_lag,
-                                  lambda,rho,step_init,
-                                  step_mult,step_max_iter)
-      C_new = step_size_obj$C_new
-      d_new = step_size_obj$d
-      
-    }else if(is.numeric(step_size)){
-      
-      step_lambda = step_size*lambda
-      C_tmp = C_old - step_size*nabla_C
-      C_prox_obj = prox_nuclear(C_tmp,step_lambda)
-      C_new = C_prox_obj$X_new
-      d_new = C_prox_obj$d
-    }
-    
-    #Check convergence
-    iterations = iterations + 1
-    if(norm(C_new-C_old,"F")/nrow(C_old) < thresh){
-      convergence=0
-      break
-    }
-    if(iterations > max_iter){
-      convergence=1
-      break
-    }
-  }
-  list(C = C_new,iterations=iterations,convergence=convergence,d=d_new)
-}
-
 #Functions to update A and B
 softt_matrix = function(X,lambda){
   X_sign = sign(X)
@@ -145,11 +68,12 @@ prox_L2_L1 = function(x,n,lambda_L2,lambda_L1,omegas){
   }
   x
 }
-AB_loss = function(S,AB,rho){
-  rho*sum((S-AB)^2)/2
+AB_loss = function(DY,Y_lag,AB){
+  sum((DY-Y_lag%*%t(AB))^2)/nrow(Y_lag)
 }
-AB_step_size = function(S,A,B,nabla_A,nabla_B,lambda_L2,lambda_L1=NULL,
-                        omegas,rho,step_init=1,step_mult=0.5,
+AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
+                        lambda_L2,lambda_L1=NULL,
+                        omegas,step_init=1,step_mult=0.5,
                         max_iter = 1000){
   
   n = nrow(A); n2 = 2*n
@@ -158,7 +82,7 @@ AB_step_size = function(S,A,B,nabla_A,nabla_B,lambda_L2,lambda_L1=NULL,
   ind_A = c(sapply(1:n,function(j) 1:n + (j-1)*n2))
   ind_B = ind_A + n
   nabla_c = c(rbind(nabla_A,nabla_B))
-  g_old = AB_loss(S,AB,rho)
+  g_old = AB_loss(DY,Y_lag,AB)
   step_size = step_init/step_mult
   count = 0
   while(TRUE){
@@ -182,21 +106,39 @@ AB_step_size = function(S,A,B,nabla_A,nabla_B,lambda_L2,lambda_L1=NULL,
     
     #Backtracking line search
     G_new = (c - c_new)/step_size
-    g_new = AB_loss(S,AB_new,rho)
+    g_new = AB_loss(DY,Y_lag,AB_new)
     LB = g_old - step_size*t(nabla_c)%*%G_new + step_size*sum(G_new^2)/2
-    if(!(g_new > LB) | count>max_iter){
+    if(!(g_new > LB)){
+      step_convergence = 0
+      break
+    }else if(count>max_iter){
+      step_convergence = 1
       break
     }
   }
   list(step_size=step_size,A_new=A_new,B_new=B_new,
-       AB_new = AB_new,step_iterations=count)
+       AB_new = AB_new,step_iterations=count,
+       step_convergence = step_convergence)
 }
 
-AB_prox = function(A,B,S,rho,lambda_L2,lambda_L1=NULL,omegas,
+VECM_SG = function(A,B,Y,
+                   lambda_L2,lambda_L1=NULL,omegas,
                    step_size="auto",step_init=1,step_mult=0.5,
                    step_max_iter=100,
-                   max_iter=1000,thresh=1e-4){
-  n = ncol(A)
+                   max_iter=1000,thresh=1e-5,
+                   print_dist=TRUE){
+  
+  #Transform data
+  n = ncol(Y)
+  Y_lag = Y[-nrow(Y),]
+  DY = diff(Y)
+  t = nrow(Y_lag)
+  DYYx2 = 2*crossprod(DY,Y_lag)/t
+  YYx2 = 2*crossprod(Y_lag)/t
+  omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
+  
+  #Conduct PGD
+  step_convergence = rep(NA,max_iter)
   A_new = A
   B_new = B
   AB_new = A%*%t(B)
@@ -205,17 +147,19 @@ AB_prox = function(A,B,S,rho,lambda_L2,lambda_L1=NULL,omegas,
     A_old = A_new
     B_old = B_new
     AB_old = AB_new
-    nabla_A = -rho*(S-AB_old)%*%B_old
-    nabla_B = -rho*t(S-AB_old)%*%A_old
+    nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old
+    nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
     if(step_size == "auto"){
       
-      AB_step_size_obj = AB_step_size(S,A_old,B_old,nabla_A,nabla_B,
-                   lambda_L2,lambda_L1,omegas,rho,
-                   step_init,step_mult,step_max_iter)
+      AB_step_size_obj = AB_step_size(DY,Y_lag,
+                                      A_old,B_old,nabla_A,nabla_B,
+                                      lambda_L2,lambda_L1,omegas,
+                                      step_init,step_mult,step_max_iter)
+                   
       A_new = AB_step_size_obj$A_new
       B_new = AB_step_size_obj$B_new
       AB_new = AB_step_size_obj$AB_new
-      
+      step_convergence[iterations+1] = AB_step_size_obj$step_convergence
     }else if(is.numeric(step_size)){
       
       # for(j in 1:ncol(A_old)){
@@ -230,7 +174,8 @@ AB_prox = function(A,B,S,rho,lambda_L2,lambda_L1=NULL,omegas,
     
     #Check convergence
     iterations = iterations + 1
-    if(sqrt(sum((A_new-A_old)^2) + sum((B_new-B_old)^2))/(2*nrow(A_old)) < thresh){
+    AB_dist = sqrt(sum((AB_new-AB_old)^2))/n
+    if(AB_dist < thresh){
       convergence=0
       break
     }
@@ -238,101 +183,13 @@ AB_prox = function(A,B,S,rho,lambda_L2,lambda_L1=NULL,omegas,
       convergence=1
       break
     }
-  }
-  list(A=A_new,B=B_new,AB = AB_new,iterations=iterations,convergence=convergence)
-}
-
-#ADMM function to estimate the full VECM
-VECM_nuclear = function(C_init,A_init,B_init,M_init,Y,
-                        lambda_nuclear,lambda_L2,lambda_L1,
-                        rho="auto",rho_init=0.1,rho_mult=0.5,mu=10,
-                        step_size = "auto",step_init=1,step_mult=0.5,
-                        step_max_iter=100,max_iter = 1000,
-                        ADMM_thresh=1e-4,C_thresh=1e-4,AB_thresh=1e-4){
-  
-  #Transform data
-  t=nrow(Y); n = ncol(Y)
-  Y_lag = Y[-t,]
-  Y_diff = diff(Y)
-  Y_lag_cross = crossprod(Y_lag)/t
-  DY_Y_lag = crossprod(Y_diff,Y_lag)/t
-  omegas = 1/eigen(crossprod(Y)/t^2)$values
-  
-  
-  #Initialize objects to update
-  C_new = C_init
-  A_new = A_init
-  B_new = B_init
-  AB_new = A_new%*%t(B_new)
-  M_new = M_init
-  if(rho=="auto"){
-    rho_new = rho_init
-  }else{
-    rho_new = rho
-  }
-  
-  
-  
-  #Run ADMM algorithm
-  counter = 0
-  while(TRUE){
-    
-    counter = counter+1
-    C_old = C_new
-    A_old = A_new
-    B_old = B_new
-    AB_old = AB_new
-    M_old = M_new
-    
-    #Update C
-    U = AB_old - M_old/rho_new
-    C_update = C_prox(C_old,U,Y_diff,Y_lag,
-                      Y_lag_cross,DY_Y_lag,
-                      lambda_nuclear,rho_new,
-                      step_size,step_init,step_mult,
-                      step_max_iter,max_iter,C_thresh)
-    C_new = C_update$C
-    
-    #Update A,B
-    S = C_new + M_old/rho_new
-    AB_update = AB_prox(A_old,B_old,S,rho_new,lambda_L2,lambda_L1,omegas,
-                        step_size,step_init,step_mult,step_max_iter,
-                        max_iter,AB_thresh)
-    A_new = AB_update$A
-    B_new = AB_update$B
-    AB_new = AB_update$AB        
-    
-    #Update M
-    M_new = M_old + rho_new*(C_new - AB_new)
-    
-    #Check convergence
-    if(norm(C_new-C_old,"F")/nrow(C_old) < ADMM_thresh){
-      convergence=0
-      break
-    }
-    print(norm(C_new-C_old,"F")/nrow(C_old))
-    
-    if(counter > max_iter){
-      convergence=1
-      break
-    }
-    
-    #Update rho
-    if(rho=="auto"){
-      dual_resid = rho_new*(AB_new - AB_old)
-      dual_resid_norm = sqrt(sum(dual_resid^2))
-      primal_resid = C_new - AB_new
-      primal_resid_norm = sqrt(sum(primal_resid^2))
-      if(primal_resid_norm>mu*dual_resid_norm){
-        rho_new = rho_new/rho_mult
-      }else if(primal_resid_norm < dual_resid_norm/mu){
-        rho_new = rho_mult*rho_new
-      }
-      #print(c(rho_new,dual_resid_norm,primal_resid_norm))
+    if(print_dist){
+      print(AB_dist)
     }
   }
-  list(C=C_new,A=A_new,B=B_new,M=M_new,d = C_update$d,
-       convergence=convergence,iterations=counter)
+  step_convergence = step_convergence[!is.na(step_convergence)]
+  list(A=A_new,B=B_new,AB = AB_new,iterations=iterations,
+       convergence=convergence,step_convergence=step_convergence)
 }
 
 VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
@@ -430,7 +287,28 @@ r = choose_r(vecm_fit,0.05)
 A_Johan = vecm_fit@W
 B_Johan = vecm_fit@V
 AB_Johan = C_Johan = A_Johan%*%t(B_Johan)
-M_init = matrix(0,nrow(A_Johan),nrow(A_Johan))
+
+
+#Testing PGD
+A_init=A_Johan;B_init=B_Johan
+lambda_L2=0.2;lambda_L1=NULL;
+step_size = "auto";step_init=1;step_mult=0.5
+step_max_iter=100;max_iter = 1000;thresh=1e-4
+test = VECM_SG(A=A_Johan,B=B_Johan,
+               Y=Y,lambda_L2=0.1,lambda_L1=0.1,
+               step_size = "auto",step_init=1,step_mult=0.5,
+               step_max_iter=100,max_iter = 1000,thresh=1e-5,
+               print_dist=T)
+test$convergence
+mean(test$step_convergence)
+c(norm(Pi - AB_Johan,"F"),norm(Pi - test$AB,"F"))
+test$A
+
+
+
+
+
+
 
 
 #Tuned results
