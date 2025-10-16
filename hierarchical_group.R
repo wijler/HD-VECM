@@ -1,6 +1,7 @@
 rm(list=ls())
 setwd("C:/Github projects/HD-VECM")
 library(urca)
+source("source.R")
 
 #Miscellaneous functions
 choose_r = function(vecm_fit,alpha=0.05){
@@ -34,25 +35,17 @@ loss_function = function(Y_D,Y_lag,A,B,lambda_L1,lambda_L2,omegas){
 }
 
 #Generate data
-set.seed(7406)
-n = 10; t = 500
-burnin = 50
-t_total = t+burnin
-alpha = c(-0.5,rep(0,n-1))
-beta = c(1,rep(-1,n-1))
-A_true = cbind(alpha,matrix(0,n,n-1))
-B_true = cbind(beta,matrix(0,n,n-1))
-Phi = diag(0,n)
-Pi = alpha%*%t(beta)
-Phi_1 = diag(n) + Pi + Phi
-Phi_2 = -Phi
-eps = matrix(rnorm(t_total*n),t_total,n)
-Y = matrix(0,t_total,n)
-for(s in 3:t_total){
-  Y[s,] = Phi_1%*%Y[s-1,] + Phi_2%*%Y[s-2,] + eps[s,]
-}
-Y = Y[-c(1:burnin),]
+set.seed(746)
+t = 500
+my_data = draw_VECM(t)
+A = cbind(my_data$A,matrix(0,11,7))
+B = cbind(my_data$B,matrix(0,11,7))
+Pi = A%*%t(B)
+Y = my_data$Y
+r = my_data$r
 matplot(Y,type="l")
+n = nrow(A)
+
 
 #Initial parameters
 colnames(Y) = paste("x",1:n,sep="")
@@ -87,11 +80,11 @@ MBs_kp1 = MBs_k
 A_johansen = cbind(A_hat[,1],matrix(0,n,n-1))
 B_johansen = cbind(B_hat[,1],matrix(0,n,n-1))
 Pi_johansen = A_johansen%*%t(B_johansen)
-MSEs_johansen = c(sqrt(sum((A_true-A_johansen)^2)),
-                  sqrt(sum((B_true-B_johansen)^2)),
+MSEs_johansen = c(sqrt(sum((A-A_johansen)^2)),
+                  sqrt(sum((B-B_johansen)^2)),
                   sqrt(sum((Pi-Pi_johansen)^2)))
-MSEs_OLS = c(sqrt(sum((A_true-A_hat)^2)),
-             sqrt(sum((B_true-B_hat)^2)),
+MSEs_OLS = c(sqrt(sum((A-A_hat)^2)),
+             sqrt(sum((B-B_hat)^2)),
              sqrt(sum((Pi-Pi_hat)^2)))
 
 #ADMM algorithm
@@ -180,8 +173,8 @@ while(counter < 10001){
   A_ADMM = As_kp1$A
   B_ADMM = Bs_kp1$B
   Pi_ADMM = A_ADMM%*%t(B_ADMM)
-  MSEs["ADMM",] = c(sqrt(sum((A_true-A_ADMM)^2)),
-                    sqrt(sum((B_true-B_ADMM)^2)),
+  MSEs["ADMM",] = c(sqrt(sum((A-A_ADMM)^2)),
+                    sqrt(sum((B-B_ADMM)^2)),
                     sqrt(sum((Pi-Pi_ADMM)^2)))
   zero_js = which(sapply(1:n,function(j){
     As_kp1[[j+1]][1]==0
@@ -198,15 +191,15 @@ while(counter < 10001){
   A_ADMM_restr = cbind(A_ADMM[,1:r_hat],matrix(0,n,n-r_hat))
   B_ADMM_restr = cbind(B_ADMM[,1:r_hat],matrix(0,n,n-r_hat))
   Pi_ADMM_restr = A_ADMM_restr%*%t(B_ADMM_restr)
-  MSEs["ADMM_restr",] = c(sqrt(sum((A_true-A_ADMM_restr)^2)),
-                    sqrt(sum((B_true-B_ADMM_restr)^2)),
+  MSEs["ADMM_restr",] = c(sqrt(sum((A-A_ADMM_restr)^2)),
+                    sqrt(sum((B-B_ADMM_restr)^2)),
                     sqrt(sum((Pi-Pi_ADMM_restr)^2)))
   
   #Compute A,B with rank restriction and normalization
   A_ADMM_norm = A_ADMM_restr*-0.5/A_ADMM_restr[1,1]
   B_ADMM_norm = B_ADMM_restr*A_ADMM_restr[1,1]/(-0.5)
-  MSEs["ADMM_norm",] = c(sqrt(sum((A_true-A_ADMM_norm)^2)),
-                          sqrt(sum((B_true-B_ADMM_norm)^2)),
+  MSEs["ADMM_norm",] = c(sqrt(sum((A-A_ADMM_norm)^2)),
+                          sqrt(sum((B-B_ADMM_norm)^2)),
                           MSEs["ADMM_restr","Pi"])
   
   

@@ -130,7 +130,7 @@ VECM_SG = function(A,B,Y,
                    step_size="auto",step_init=1,step_mult=0.5,
                    step_max_iter=100,
                    max_iter=1000,thresh=1e-5,
-                   print_dist=TRUE){
+                   print_dist=TRUE,print_loss=FALSE){
   
   #Transform data
   n = ncol(Y)
@@ -199,6 +199,10 @@ VECM_SG = function(A,B,Y,
     }
     if(print_dist){
       print(AB_dist)
+    }
+    if(print_loss){
+      loss_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
+      print(loss_new)
     }
   }
   step_convergence = step_convergence[!is.na(step_convergence)]
@@ -312,7 +316,7 @@ test = VECM_SG(A=A_Johan,B=B_Johan,
                Y=Y,lambda_L2=0.1,lambda_L1=0.1,,lambda_R=0,
                step_size = "auto",step_init=1,step_mult=0.5,
                step_max_iter=100,max_iter = 1000,thresh=1e-5,
-               print_dist=T)
+               print_dist=F,print_loss = T)
 test$convergence
 mean(test$step_convergence)
 c(norm(Pi - AB_Johan,"F"),norm(Pi - test$AB,"F"))

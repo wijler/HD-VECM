@@ -33,6 +33,23 @@ BIC_value = function(Y,A,B){
   log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
    + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
 }
+AIC_value = function(Y,A,B){
+  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
+  + 2*(sum(A!=0)+sum(B!=0))
+}
+trace_R2 = function(A_hat,A){
+  
+  zero_cols = apply(A_hat,2,function(x) all(x==0))
+  if(all(!zero_cols)){
+    max_r = ncol(A_hat)
+  }else{
+    max_r = min(which(zero_cols))-1
+  }
+  A_hat_sub = A_hat[,1:max_r]
+  P_A_hat = A_hat_sub%*%solve(crossprod(A_hat_sub))%*%t(A_hat_sub)
+  stat = sum((P_A_hat%*%A)^2)/sum(A^2)
+  stat
+}
 
 #Functions to update C
 prox_nuclear = function(X,lambda){
@@ -42,7 +59,7 @@ prox_nuclear = function(X,lambda){
   list(X_new=X_new,d=d_softt)
 }
 C_loss = function(C,U,DY,Y_lag,rho){
-  sum((DY - Y_lag%*%t(C))^2)/nrow(Y_lag) + 
+  sum((DY - Y_lag%*%t(C))^2)/(nrow(Y_lag)+1) + 
     rho*sum((C-U)^2)/2
 }
 C_step_size = function(C,nabla_C,U,DY,Y_lag,lambda,rho,
@@ -257,7 +274,9 @@ VECM_nuclear = function(C_init,A_init,B_init,M_init,Y,
   Y_lag_cross = crossprod(Y_lag)/t
   DY_Y_lag = crossprod(Y_diff,Y_lag)/t
   omegas = 1/eigen(crossprod(Y)/t^2)$values
-  
+  if(lambda_nuclear==0){
+    eye = diag(n)
+  }
   
   #Initialize objects to update
   C_new = C_init
@@ -286,12 +305,17 @@ VECM_nuclear = function(C_init,A_init,B_init,M_init,Y,
     
     #Update C
     U = AB_old - M_old/rho_new
-    C_update = C_prox(C_old,U,Y_diff,Y_lag,
-                      Y_lag_cross,DY_Y_lag,
-                      lambda_nuclear,rho_new,
-                      step_size,step_init,step_mult,
-                      step_max_iter,max_iter,C_thresh)
-    C_new = C_update$C
+    if(lambda_nuclear>0){
+      C_update = C_prox(C_old,U,Y_diff,Y_lag,
+                        Y_lag_cross,DY_Y_lag,
+                        lambda_nuclear,rho_new,
+                        step_size,step_init,step_mult,
+                        step_max_iter,max_iter,C_thresh)
+      C_new = C_update$C
+    }else{
+      C_new = (2*DY_Y_lag + rho*U)%*%solve(2*Y_lag_cross + rho*eye)
+    }
+
     
     #Update A,B
     S = C_new + M_old/rho_new
@@ -331,12 +355,17 @@ VECM_nuclear = function(C_init,A_init,B_init,M_init,Y,
       #print(c(rho_new,dual_resid_norm,primal_resid_norm))
     }
   }
-  list(C=C_new,A=A_new,B=B_new,M=M_new,d = C_update$d,
+  if(lambda_nuclear>0){
+    d = C_update$d
+  }else{
+    d = n
+  }
+  list(C=C_new,A=A_new,B=B_new,M=M_new,d = d,
        convergence=convergence,iterations=counter)
 }
 
 VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
-                              lambda_nuclear,lambda_grid,
+                              lambda_nuclear,lambda_grid,crit="MSE",
                               rho="auto",rho_init=0.1,rho_mult=0.5,mu=10,
                               step_size = "auto",step_init=1,step_mult=0.5,
                               step_max_iter=100,max_iter = 1000,
@@ -351,13 +380,13 @@ VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
                 dimnames = list(row=1:n,col=1:n,
                                 mat=c("C","A","B","M"),
                                 lambda = 1:n_lambdas))
-  BICs = PI_MSEs = r_C = r_AB = rep(0,n_lambdas,2);
+  BICs = AICs = PI_MSEs = r_C = r_AB = rep(0,n_lambdas,2);
   for(j in 1:n_lambdas){
     lambda_L2 = lambda_grid[j,1]
     if(ncol(lambda_grid)==2){ lambda_L1 = lambda_grid[j,2] }
     
     VECM_obj = VECM_nuclear(C_init = C_init,A_init = A_init,B_init = B_init,
-                            M_init = M_init,Y = Y,lambda_nuclear = 0.001,
+                            M_init = M_init,Y = Y,lambda_nuclear = lambda_nuclear,
                             lambda_L2 = lambda_L2,lambda_L1 = lambda_L1,
                             rho = rho,rho_init=rho_init,rho_mult = rho_mut,
                             mu=mu,step_size = step_size,step_init = step_init,
@@ -384,11 +413,18 @@ VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
     #Compute BICs
     r_C[j] = sum(VECM_obj$d!=0)
     r_AB[j] = sum(apply(A_init,2,function(x) !all(x==0)))
-    BICs[j] = BIC_value(Y,A_init,B_init)
-    PI_MSEs[j] = sqrt(sum((Pi-A_init%*%t(B_init))^2))
+    BICs[j] = BIC_value(Y,VECM_obj$A,VECM_obj$B)
+    AICs[j] = AIC_value(Y,VECM_obj$A,VECM_obj$B)
+    PI_MSEs[j] = sqrt(sum((Pi-VECM_obj$A%*%t(VECM_obj$B))^2))
     print(j)
   }
-  lambdas_opt = lambda_grid[which.min(PI_MSEs),] #Cheating a bit for now
+  if(crit=="MSE"){
+    lambdas_opt = lambda_grid[which.min(PI_MSEs),]
+  }else if(crit=="AIC"){
+    lambdas_opt = lambda_grid[which.min(AICs),]
+  }else if(crit=="BIC"){
+    lambdas_opt = lambda_grid[which.min(BICs),]
+  }
   ind_opt = which.min(PI_MSEs)
   A_opt = coefs[,,"A",ind_opt]
   B_opt = coefs[,,"B",ind_opt]
@@ -396,12 +432,13 @@ VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
   M_opt = coefs[,,"M",ind_opt]
   
   #return results
-  list(lambda_opt = lambdas_opt,A = A_opt, B = B_opt, 
-       C = C_opt, M = M_opt, BICs = BICs, PI_MSEs = PI_MSEs)
+  list(lambda_opt = lambdas_opt,ind_opt=ind_opt,
+       A = A_opt, B = B_opt,C = C_opt, M = M_opt, 
+       AICs = AICs,BICs = BICs, PI_MSEs = PI_MSEs)
 }
 
 #Generate data
-set.seed(7406)
+set.seed(746)
 t = 500
 my_data = draw_VECM(t)
 A = cbind(my_data$A,matrix(0,11,7))
@@ -435,25 +472,27 @@ M_init = matrix(0,nrow(A_Johan),nrow(A_Johan))
 
 #Tuned results
 rho=0.001
-lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=))
+lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=30))
 lambda_grid = matrix(lambda_L2_grid,ncol=1)
 VECM_L2 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
                              M_init = M_init,Y = Y,
-                             lambda_nuclear = 0.001,lambda_grid,
+                             lambda_nuclear = 0.01,lambda_grid,crit="AIC",
                              rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
                              step_size = "auto",step_init = 1,step_mult = 0.5,
                              step_max_iter = 100,max_iter = 1000,
-                             ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
+                             ADMM_thresh = 1e-4,C_thresh = 1e-5,AB_thresh = 1e-5)
 
 lambda_L1_grid = lambda_L2_grid
 lambda_grid = expand.grid(lambda_L1_grid,lambda_L2_grid)[,c(2,1)]
-VECM_L2_L1 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
-                             M_init = M_init,Y = Y,
-                             lambda_nuclear = 0.001,lambda_grid,
-                             rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
-                             step_size = "auto",step_init = 1,step_mult = 0.5,
-                             step_max_iter = 100,max_iter = 1000,
-                             ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
+VECM_L2_L1 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,
+                                B_init = B_Johan,M_init = M_init,Y = Y,
+                                lambda_nuclear = 0.001,lambda_grid,
+                                crit="AIC",
+                                rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
+                                step_size = "auto",step_init = 1,step_mult = 0.5,
+                                step_max_iter = 100,max_iter = 1000,
+                                ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
+                             
 #Compute losses
 
 #VECM-L2
@@ -480,21 +519,14 @@ AB_RR = A_RR%*%t(B_RR)
 fits_Pi = c(norm(Pi - AB_Johan,"F"),norm(Pi - AB_RR,"F"),
             norm(Pi - AB_L2,"F"),norm(Pi - AB_L2_L1,"F"))
 
-fits_A = c(norm(A - A_Johan,"F"),norm(A - A_RR,"F"),
-           norm(A - A_L2,"F"),norm(A - A_L2_L1,"F"))
+fits_A = c(trace_R2(A_Johan[,1:4],A),trace_R2(A_RR[,1:4],A),
+           trace_R2(A_L2[,1:4],A),trace_R2(A_L2_L1[,1:4],A))
 
-fits_A_norm = c(norm(A - A_Johan*A[1,1]/A_Johan[1,1],"F"),
-                norm(A - A_RR*A[1,1]/A_RR[1,1],"F"),
-                norm(A - A_L2_norm,"F"),norm(A - A_L2_L1_norm,"F"))
-
-fits_B = c(norm(B - B_Johan,"F"),norm(B - B_RR,"F"),
-           norm(B - B_L2,"F"),norm(B - B_L2_L1,"F"))
-fits_B_norm = c(norm(B - B_Johan*A_Johan[1,1]/A[1,1],"F"),
-                norm(B - B_RR*A_RR[1,1]/A[1,1],"F"),
-                norm(B - B_L2_norm,"F"),norm(B - B_L2_L1_norm,"F"))
+fits_B = c(trace_R2(B_Johan[,1:4],B),trace_R2(B_RR[,1:4],B),
+           trace_R2(B_L2[,1:4],B),trace_R2(B_L2_L1[,1:4],B))
 ranks = c(ncol(A_Johan),r,r_L2,r_L2_L1)
-fits = rbind(fits_Pi,fits_A,fits_A_norm,fits_B,fits_B_norm,ranks)
-rownames(fits) = c("Pi","A","A_norm","B","B_norm","rank")
+fits = rbind(fits_Pi,fits_A,fits_B,ranks)
+rownames(fits) = c("Pi","A","B","rank")
 colnames(fits) = c("OLS","Johansen","VECM_L2","VECM_L2_L1")
 fits
 
