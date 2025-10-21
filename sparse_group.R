@@ -2,6 +2,7 @@ rm(list=ls())
 setwd("C:/Github projects/HD-VECM")
 library(urca)
 source("source.R")
+Rcpp::sourceCpp("sparse_group_fast.cpp")
 
 #Miscellaneous functions
 generate_VECM = function(n,t,burnin,A,B){
@@ -140,11 +141,11 @@ VECM_SG = function(A,B,Y,
   DYYx2 = 2*crossprod(DY,Y_lag)/t
   YYx2 = 2*crossprod(Y_lag)/t
   omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
-  
+
   #Conduct PGD
   step_convergence = rep(NA,max_iter)
-  A_new = A
-  B_new = B
+  A_new = A_old = A
+  B_new = B_old = B
   AB_new = A%*%t(B)
   iterations=0
   while(TRUE){
@@ -163,32 +164,168 @@ VECM_SG = function(A,B,Y,
       nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
     }
     
-    if(step_size == "auto"){
-      
-      AB_step_size_obj = AB_step_size(DY,Y_lag,
-                                      A_old,B_old,nabla_A,nabla_B,
-                                      lambda_L2,lambda_L1,lambda_R,omegas,
-                                      step_init,step_mult,step_max_iter)
-                   
-      A_new = AB_step_size_obj$A_new
-      B_new = AB_step_size_obj$B_new
-      AB_new = AB_step_size_obj$AB_new
-      step_convergence[iterations+1] = AB_step_size_obj$step_convergence
-    }else if(is.numeric(step_size)){
-      
-      # for(j in 1:ncol(A_old)){
-      #   c_tmp = c(A_old[,j],B_old[,j]) - step_size*c(nabla_A[,j],nabla_B[,j])
-      #   c_prox = prox_L2(c_tmp,step_size*lambda*omegas[j])
-      #   A_new[,j] = head(c_prox,n)
-      #   B_new[,j] = tail(c_prox,n)
-      # }
-      # AB_new = A_new%*%t(B_new)
-      
-    }
+    #Perform proximal update with backtracking
+    AB_step_size_obj = AB_step_size(DY,Y_lag,
+                                    A_old,B_old,nabla_A,nabla_B,
+                                    lambda_L2,lambda_L1,lambda_R,omegas,
+                                    step_init,step_mult,step_max_iter)
+    
+    A_new = AB_step_size_obj$A_new
+    B_new = AB_step_size_obj$B_new
+    AB_new = AB_step_size_obj$AB_new
+    step_convergence[iterations+1] = AB_step_size_obj$step_convergence
+    
     
     #Check convergence
     iterations = iterations + 1
     AB_dist = sqrt(sum((AB_new-AB_old)^2))/n
+    if(AB_dist < thresh){
+      convergence=0
+      break
+    }
+    if(iterations > max_iter){
+      convergence=1
+      break
+    }
+    if(print_dist & (iterations %% 100 == 0)){
+      print(AB_dist)
+    }
+    if(print_loss & (iterations %% 100 == 0)){
+      loss_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
+      print(loss_new)
+    }
+  }
+  step_convergence = step_convergence[!is.na(step_convergence)]
+  list(A=A_new,B=B_new,AB = AB_new,iterations=iterations,
+       convergence=convergence,step_convergence=step_convergence)
+}
+
+VECM_SG_tuned = function(A,B,Y,lambda_grid,lambda_R,omegas,
+                         step_size="auto",step_init=1,step_mult=0.5,
+                         step_max_iter=100,
+                         max_iter=1000,thresh=1e-5){
+  
+  n_lambdas = nrow(lambda_grid)
+  lambda_L2_changes = which(diff(lambda_grid[,1])!=0) #Used for updating initialization
+  if(ncol(lambda_grid)==1){lambda_L1 = 0}
+  A_old = A; 
+  B_old = B_init; M_init_old = M_init;
+  coefs = array(NA,dim=c(n,n,4,n_lambdas),
+                dimnames = list(row=1:n,col=1:n,
+                                mat=c("C","A","B","M"),
+                                lambda = 1:n_lambdas))
+  BICs = AICs = PI_MSEs = r_C = r_AB = rep(0,n_lambdas,2);
+  
+}
+
+
+#Accelerated version
+AB_step_size_accelerated = function(DY,Y_lag,A,B,nabla_A,nabla_B,
+                        lambda_L2,lambda_L1=0,lambda_R=0,
+                        omegas,step_init=1,step_mult=0.5,
+                        max_iter = 1000){
+  
+  n = nrow(A); n2 = 2*n
+  AB = A%*%t(B)
+  c = c(rbind(A,B))
+  ind_A = c(sapply(1:n,function(j) 1:n + (j-1)*n2))
+  ind_B = ind_A + n
+  nabla_c = c(rbind(nabla_A,nabla_B))
+  g_old = AB_loss(DY,Y_lag,AB,lambda_R,A,B)
+  step_size = step_init/step_mult
+  count = 0
+  while(TRUE){
+    count = count+1
+    step_size = step_mult*step_size
+    step_lambda_L2 = step_size*lambda_L2
+    c_tmp = c - step_size*nabla_c
+    
+    #proximal update
+    if(lambda_L1==0){
+      c_new = prox_L2(c_tmp,n,step_lambda_L2,omegas)
+    }else{
+      step_lambda_L1 = step_size*lambda_L1
+      c_new = prox_L2_L1(c_tmp,n,step_lambda_L2,step_lambda_L1,omegas)
+    }
+    
+    #Update parameters
+    A_new = matrix(c_new[ind_A],n,n)
+    B_new =  matrix(c_new[ind_B],n,n)
+    AB_new = A_new%*%t(B_new)
+    
+    #Backtracking line search
+    c_diff = c_new - c
+    g_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
+    LB = g_old + t(nabla_c)%*%c_diff + sum(c_diff^2)/(2*step_size)
+    if(!(g_new > LB)){
+      step_convergence = 0
+      break
+    }else if(count>max_iter){
+      step_convergence = 1
+      break
+    }
+  }
+  list(step_size=step_size,A_new=A_new,B_new=B_new,
+       AB_new = AB_new,step_iterations=count,
+       step_convergence = step_convergence)
+}
+VECM_SG_accelerated = function(A,B,Y,
+                               lambda_L2,lambda_L1=0,lambda_R=0,omegas,
+                               step_size="auto",step_init=1,step_mult=0.5,
+                               step_max_iter=100,
+                               max_iter=1000,thresh=1e-5,
+                               print_dist=TRUE,print_loss=FALSE){
+  
+  #Transform data
+  n = ncol(Y)
+  Y_lag = Y[-nrow(Y),]
+  DY = diff(Y)
+  t = nrow(Y_lag)
+  DYYx2 = 2*crossprod(DY,Y_lag)/t
+  YYx2 = 2*crossprod(Y_lag)/t
+  omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
+  
+  #Conduct PGD
+  step_convergence = rep(NA,max_iter)
+  A_new = A_old = A
+  B_new = B_old = B
+  AB_new = A%*%t(B)
+  step_new = step_old = step_init
+  iterations=0
+  while(TRUE){
+    
+    #Update old coefficients
+    k_mult = (iterations-1)/(iterations+2)
+    A_old = A_new + k_mult*(A_new - A_old)
+    B_old = B_new + k_mult*(A_new - A_old)
+    AB_old = A_old%*%t(B_old)
+    step_old = step_new
+    
+    #Update gradient
+    if(lambda_R > 0){
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old + 2*lambda_R*A_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old + 2*lambda_R*B_old
+    }else{
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
+    }
+    
+    #Perform proximal update with backtracking
+    AB_step_size_obj = AB_step_size_accelerated(DY,Y_lag,
+                                    A_old,B_old,nabla_A,nabla_B,
+                                    lambda_L2,lambda_L1,lambda_R,omegas,
+                                    step_old,step_mult,step_max_iter)
+    
+    A_new = AB_step_size_obj$A_new
+    B_new = AB_step_size_obj$B_new
+    AB_new = AB_step_size_obj$AB_new
+    step_new = AB_step_size_obj$step_size
+    step_convergence[iterations+1] = AB_step_size_obj$step_convergence
+    
+    
+    #Check convergence
+    iterations = iterations + 1
+    AB_dist = sqrt(sum((A_new - A_old)^2) + sum((B_new - B_old)^2))/step_new
     if(AB_dist < thresh){
       convergence=0
       break
@@ -210,70 +347,13 @@ VECM_SG = function(A,B,Y,
        convergence=convergence,step_convergence=step_convergence)
 }
 
-VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
-                              lambda_nuclear,lambda_grid,
-                              rho="auto",rho_init=0.1,rho_mult=0.5,mu=10,
-                              step_size = "auto",step_init=1,step_mult=0.5,
-                              step_max_iter=100,max_iter = 1000,
-                              ADMM_thresh=1e-4,C_thresh=1e-4,AB_thresh=1e-4){
-  
-  n_lambdas = nrow(lambda_grid)
-  lambda_L2_changes = which(diff(lambda_grid[,1])!=0) #Used for updating initialization
-  if(ncol(lambda_grid)==1){lambda_L1 = NULL}
-  C_init_old = C_init; A_init_old = A_init; 
-  B_init_old = B_init; M_init_old = M_init;
-  coefs = array(NA,dim=c(n,n,4,n_lambdas),
-                dimnames = list(row=1:n,col=1:n,
-                                mat=c("C","A","B","M"),
-                                lambda = 1:n_lambdas))
-  BICs = PI_MSEs = r_C = r_AB = rep(0,n_lambdas,2);
-  for(j in 1:n_lambdas){
-    lambda_L2 = lambda_grid[j,1]
-    if(ncol(lambda_grid)==2){ lambda_L1 = lambda_grid[j,2] }
-    
-    VECM_obj = VECM_nuclear(C_init = C_init,A_init = A_init,B_init = B_init,
-                            M_init = M_init,Y = Y,lambda_nuclear = 0.001,
-                            lambda_L2 = lambda_L2,lambda_L1 = lambda_L1,
-                            rho = rho,rho_init=rho_init,rho_mult = rho_mut,
-                            mu=mu,step_size = step_size,step_init = step_init,
-                            step_mult = step_mult,step_max_iter = step_max_iter,
-                            max_iter = max_iter,ADMM_thresh = ADMM_thresh,
-                            C_thresh = C_thresh,AB_thresh = AB_thresh)
-    coefs[,,1,j] = VECM_obj$C
-    coefs[,,2,j] = VECM_obj$A
-    coefs[,,3,j] = VECM_obj$B
-    coefs[,,4,j] = VECM_obj$M
-    
-    #Update initializers for warm start
-    if(j %in% lambda_L2_changes){
-      last_lambda_index = min(which(lambda_grid[,1]==lambda_grid[j,1]))
-      C_init = coefs[,,1,last_lambda_index]
-      A_init = coefs[,,2,last_lambda_index]
-      B_init = coefs[,,3,last_lambda_index]
-      M_init = coefs[,,4,last_lambda_index]
-    }else{
-      C_init = VECM_obj$C; A_init = VECM_obj$A; 
-      B_init = VECM_obj$B; M_init = VECM_obj$M;
-    }
-    
-    #Compute BICs
-    r_C[j] = sum(VECM_obj$d!=0)
-    r_AB[j] = sum(apply(A_init,2,function(x) !all(x==0)))
-    BICs[j] = BIC_value(Y,A_init,B_init)
-    PI_MSEs[j] = sqrt(sum((Pi-A_init%*%t(B_init))^2))
-    print(j)
-  }
-  lambdas_opt = lambda_grid[which.min(PI_MSEs),] #Cheating a bit for now
-  ind_opt = which.min(PI_MSEs)
-  A_opt = coefs[,,"A",ind_opt]
-  B_opt = coefs[,,"B",ind_opt]
-  C_opt = coefs[,,"C",ind_opt]
-  M_opt = coefs[,,"M",ind_opt]
-  
-  #return results
-  list(lambda_opt = lambdas_opt,A = A_opt, B = B_opt, 
-       C = C_opt, M = M_opt, BICs = BICs, PI_MSEs = PI_MSEs)
-}
+
+
+
+
+
+
+
 
 #Generate data
 set.seed(7406)
@@ -313,14 +393,29 @@ lambda_L2=0.2;lambda_L1=NULL;
 step_size = "auto";step_init=1;step_mult=0.5
 step_max_iter=100;max_iter = 1000;thresh=1e-4
 test = VECM_SG(A=A_Johan,B=B_Johan,
-               Y=Y,lambda_L2=0.1,lambda_L1=0.1,,lambda_R=0,
-               step_size = "auto",step_init=1,step_mult=0.5,
-               step_max_iter=100,max_iter = 1000,thresh=1e-5,
+               Y=Y,lambda_L2=0.01,lambda_L1=0.01,lambda_R=1e-2,
+               step_size = "auto",step_init=1e-3,step_mult=0.5,
+               step_max_iter=100,
+               max_iter = 1e7,thresh=1e-5,
                print_dist=F,print_loss = T)
 test$convergence
 mean(test$step_convergence)
 c(norm(Pi - AB_Johan,"F"),norm(Pi - test$AB,"F"))
 test$A
+
+
+#Testing RCPP implementation
+test_Rcpp = VECM_SG_Rcpp(A=A_Johan,B=B_Johan,
+                         Y=Y,lambda_L2=0.01,lambda_L1=0.01,lambda_R=1e-2,
+                         step_init=1e-3,step_mult=0.5,
+                         step_max_iter=100,
+                         max_iter = 1e7,thresh=1e-5,
+                         print_dist=F,print_loss = T)
+                    
+test_Rcpp$convergence
+mean(test_Rcpp$step_convergence)
+c(norm(Pi - AB_Johan,"F"),norm(Pi - test_Rcpp$AB,"F"))
+test_Rcpp$A
 
 
 
