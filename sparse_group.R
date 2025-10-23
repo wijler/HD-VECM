@@ -2,7 +2,7 @@ rm(list=ls())
 setwd("C:/Github projects/HD-VECM")
 library(urca)
 source("source.R")
-Rcpp::sourceCpp("sparse_group_fast.cpp")
+#Rcpp::sourceCpp("sparse_group_fast.cpp")
 
 #Miscellaneous functions
 generate_VECM = function(n,t,burnin,A,B){
@@ -33,6 +33,10 @@ choose_r = function(vecm_fit,alpha=0.05){
 BIC_value = function(Y,A,B){
   log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
    + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
+}
+AIC_value = function(Y,A,B){
+  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
+  + 2*(sum(A!=0)+sum(B!=0))/nrow(Y) 
 }
 
 #Functions to update A and B
@@ -127,8 +131,8 @@ AB_step_size = function(DY,Y_lag,A,B,nabla_A,nabla_B,
 }
 
 VECM_SG = function(A,B,Y,
-                   lambda_L2,lambda_L1=0,lambda_R=0,omegas,
-                   step_size="auto",step_init=1,step_mult=0.5,
+                   lambda_L2,lambda_L1=0,lambda_R=0,omegas=NULL,
+                   step_init=1,step_mult=0.5,
                    step_max_iter=100,
                    max_iter=1000,thresh=1e-5,
                    print_dist=TRUE,print_loss=FALSE){
@@ -140,8 +144,10 @@ VECM_SG = function(A,B,Y,
   t = nrow(Y_lag)
   DYYx2 = 2*crossprod(DY,Y_lag)/t
   YYx2 = 2*crossprod(Y_lag)/t
-  omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
-
+  if(is.null(omegas)){
+    omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
+  }
+ 
   #Conduct PGD
   step_convergence = rep(NA,max_iter)
   A_new = A_old = A
@@ -200,21 +206,73 @@ VECM_SG = function(A,B,Y,
        convergence=convergence,step_convergence=step_convergence)
 }
 
-VECM_SG_tuned = function(A,B,Y,lambda_grid,lambda_R,omegas,
-                         step_size="auto",step_init=1,step_mult=0.5,
-                         step_max_iter=100,
-                         max_iter=1000,thresh=1e-5){
+VECM_SG_tuned = function(A,B,Y,lambda_grid,lambda_R,omegas=NULL,
+                         step_init=1,step_mult=0.5,
+                         step_max_iter=100,max_iter=1000,
+                         thresh=1e-5,crit="BIC"){
   
   n_lambdas = nrow(lambda_grid)
   lambda_L2_changes = which(diff(lambda_grid[,1])!=0) #Used for updating initialization
   if(ncol(lambda_grid)==1){lambda_L1 = 0}
-  A_old = A; 
-  B_old = B_init; M_init_old = M_init;
-  coefs = array(NA,dim=c(n,n,4,n_lambdas),
+  if(is.null(omegas)){
+    omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
+    }
+  
+  A_old = A;
+  B_old = B;
+  coefs = array(NA,dim=c(n,n,2,n_lambdas),
                 dimnames = list(row=1:n,col=1:n,
-                                mat=c("C","A","B","M"),
+                                mat=c("A","B"),
                                 lambda = 1:n_lambdas))
-  BICs = AICs = PI_MSEs = r_C = r_AB = rep(0,n_lambdas,2);
+  BICs = AICs = PI_MSEs = r_AB = rep(0,n_lambdas,2);
+  for(j in 1:n_lambdas){
+    lambda_L2 = lambda_grid[j,1]
+    if(ncol(lambda_grid)==2){ lambda_L1 = lambda_grid[j,2] }
+    
+    VECM_obj = VECM_SG(A_old,B_old,Y,
+                       lambda_L2,lambda_L1,lambda_R,omegas,
+                       step_init,step_mult,
+                       step_max_iter,max_iter,thresh,
+                       print_dist=FALSE,print_loss=FALSE)
+    coefs[,,1,j] = VECM_obj$A
+    coefs[,,2,j] = VECM_obj$B
+
+    #Update initializers for warm start
+    if(j %in% lambda_L2_changes){
+      last_lambda_index = min(which(lambda_grid[,1]==lambda_grid[j,1]))
+      A_old = coefs[,,1,last_lambda_index]
+      B_old = coefs[,,2,last_lambda_index]
+    }else{
+      A_old = VECM_obj$A;
+      B_old = VECM_obj$B;
+    }
+    
+    #Compute BICs
+    r_AB[j] = sum(apply(A_init,2,function(x) !all(x==0)))
+    BICs[j] = BIC_value(Y,VECM_obj$A,VECM_obj$B)
+    AICs[j] = AIC_value(Y,VECM_obj$A,VECM_obj$B)
+    PI_MSEs[j] = sqrt(sum((Pi-VECM_obj$AB)^2))
+    print(j)
+  }
+  
+  if(crit=="MSE"){
+    lambdas_opt = lambda_grid[which.min(PI_MSEs),]
+    ind_opt = which.min(PI_MSEs)
+  }else if(crit=="AIC"){
+    lambdas_opt = lambda_grid[which.min(AICs),]
+    ind_opt = which.min(AICs)
+  }else if(crit=="BIC"){
+    lambdas_opt = lambda_grid[which.min(BICs),]
+    ind_opt = which.min(BICs)
+  }
+  
+  A_opt = coefs[,,1,ind_opt]
+  B_opt = coefs[,,2,ind_opt]
+  
+  #return results
+  list(lambda_opt = lambdas_opt,ind_opt=ind_opt,
+       A = A_opt, B = B_opt,
+       AICs = AICs,BICs = BICs, PI_MSEs = PI_MSEs)
   
 }
 
@@ -367,17 +425,6 @@ r = my_data$r
 matplot(Y,type="l")
 n = nrow(A)
 
-# n = 10; t = 500; burnin = 50
-# t_total = t+burnin
-# alpha = c(-0.5,rep(0,n-1))
-# beta = c(1,rep(-1,n-1))
-# A = cbind(alpha,matrix(0,n,n-1))
-# B = cbind(beta,matrix(0,n,n-1))
-# VECM_sim = generate_VECM(n,t,burnin,A,B)
-# Pi = VECM_sim$Pi
-# Y = VECM_sim$Y
-# matplot(Y,type="l")
-
 #Initial parameters
 colnames(Y) = paste("x",1:n,sep="")
 vecm_fit = ca.jo(Y,K=2)
@@ -390,18 +437,20 @@ AB_Johan = C_Johan = A_Johan%*%t(B_Johan)
 #Testing PGD
 A_init=A_Johan;B_init=B_Johan
 lambda_L2=0.2;lambda_L1=NULL;
-step_size = "auto";step_init=1;step_mult=0.5
+step_init=1;step_mult=0.5
 step_max_iter=100;max_iter = 1000;thresh=1e-4
 test = VECM_SG(A=A_Johan,B=B_Johan,
                Y=Y,lambda_L2=0.01,lambda_L1=0.01,lambda_R=1e-2,
-               step_size = "auto",step_init=1e-3,step_mult=0.5,
+               step_init=1e-3,step_mult=0.5,
                step_max_iter=100,
-               max_iter = 1e7,thresh=1e-5,
+               max_iter = 1e7,thresh=1e-4,
                print_dist=F,print_loss = T)
 test$convergence
 mean(test$step_convergence)
 c(norm(Pi - AB_Johan,"F"),norm(Pi - test$AB,"F"))
 test$A
+test_tuned
+
 
 
 #Testing RCPP implementation
@@ -418,23 +467,15 @@ c(norm(Pi - AB_Johan,"F"),norm(Pi - test_Rcpp$AB,"F"))
 test_Rcpp$A
 
 
-
-
-
-
-
-
 #Tuned results
-rho=0.001
-lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=))
+lambda_L2_grid = exp(seq(log(0.001),log(1),length.out=10))
 lambda_grid = matrix(lambda_L2_grid,ncol=1)
-VECM_L2 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
-                             M_init = M_init,Y = Y,
-                             lambda_nuclear = 0.001,lambda_grid,
-                             rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
-                             step_size = "auto",step_init = 1,step_mult = 0.5,
-                             step_max_iter = 100,max_iter = 1000,
-                             ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
+test_tuned = VECM_SG_tuned(A=A_Johan,B=B_Johan,
+                           Y=Y,lambda_grid,lambda_R=1e-2,
+                           step_init=1e-3,step_mult=0.5,
+                           step_max_iter=100,
+                           max_iter = 1e7,thresh=1e-5,
+                           crit="BIC")
 
 lambda_L1_grid = lambda_L2_grid
 lambda_grid = expand.grid(lambda_L1_grid,lambda_L2_grid)[,c(2,1)]
