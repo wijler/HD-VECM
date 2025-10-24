@@ -59,6 +59,7 @@ prox_L2 = function(x,n,lambda,omegas){
   }
   x
 }
+
 prox_L2_L1 = function(x,n,lambda_L2,lambda_L1,omegas){
   n2 = 2*n
   for(j in 1:n){
@@ -277,6 +278,146 @@ VECM_SG_tuned = function(A,B,Y,lambda_grid,lambda_R,omegas=NULL,
 }
 
 
+#Nested version
+prox_L2_nested = function(X,lambda,omegas){
+  n = ncol(X)
+  for(j in 1:n){
+    group_norm = sqrt(sum(X[,(n+1-j):n]^2))
+    threshold = group_norm*lambda*omegas[n+1-j]
+    X_j = X[,(n+1-j):n]
+    if(group_norm > threshold){
+      X[,(n+1-j):n] = (1-threshold/group_norm)*X[,(n+1-j):n]
+    }else{
+      X[,(n+1-j):n] = 0
+    }
+    
+    #Get rid of numerical noise
+    X[,(n+1-j):n][abs(X[,(n+1-j):n])<1e-10] = 0
+  }
+  X
+}
+AB_step_size_nested = function(DY,Y_lag,A,B,nabla_A,nabla_B,
+                               lambda_L2,lambda_R=0,
+                               omegas,step_init=1,step_mult=0.5,
+                               max_iter = 1000){
+  
+  n = nrow(A); n2 = 2*n
+  AB = A%*%t(B)
+  C = rbind(A,B)
+  nabla_C = rbind(nabla_A,nabla_B)
+  g_old = AB_loss(DY,Y_lag,AB,lambda_R,A,B)
+  step_size = step_init/step_mult
+  count = 0
+  while(TRUE){
+    count = count+1
+    step_size = step_mult*step_size
+    step_lambda_L2 = step_size*lambda_L2
+    C_tmp = C - step_size*nabla_C
+    
+    #proximal update
+    C_new = prox_L2_nested(C_tmp,step_lambda_L2,omegas)
+    
+    #Update parameters
+    A_new = C_new[1:n,]
+    B_new =  C_new[(n+1):n2,]
+    AB_new = A_new%*%t(B_new)
+    
+    #Backtracking line search
+    G_new = (C - C_new)/step_size
+    g_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
+    LB = g_old - step_size*sum(nabla_C*G_new) + step_size*sum(G_new^2)/2
+    if(!(g_new > LB)){
+      step_convergence = 0
+      break
+    }else if(count>max_iter){
+      step_convergence = 1
+      break
+    }
+  }
+  list(step_size=step_size,A_new=A_new,B_new=B_new,
+       AB_new = AB_new,step_iterations=count,
+       step_convergence = step_convergence)
+}
+VECM_SG_nested = function(A,B,Y,
+                          lambda_L2,lambda_R=0,omegas=NULL,
+                          step_init=1,step_mult=0.5,
+                          step_max_iter=100,
+                          max_iter=1000,thresh=1e-5,
+                          print_dist=TRUE,print_loss=FALSE){
+  
+  #Transform data
+  n = ncol(Y)
+  Y_lag = Y[-nrow(Y),]
+  DY = diff(Y)
+  t = nrow(Y_lag)
+  DYYx2 = 2*crossprod(DY,Y_lag)/t
+  YYx2 = 2*crossprod(Y_lag)/t
+  if(is.null(omegas)){
+    #omegas = 1/cumsum(eigen(crossprod(Y)/(nrow(Y)^2))$values[n:1])[n:1]
+    omegas = 1/eigen(crossprod(Y)/(nrow(Y)^2))$values
+  }
+  
+  #Conduct PGD
+  step_convergence = rep(NA,max_iter)
+  A_new = A_old = A
+  B_new = B_old = B
+  AB_new = A%*%t(B)
+  iterations=0
+  while(TRUE){
+    
+    #Update old coefficients
+    A_old = A_new
+    B_old = B_new
+    AB_old = AB_new
+    
+    #Update gradient
+    if(lambda_R > 0){
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old + 2*lambda_R*A_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old + 2*lambda_R*B_old
+    }else{
+      nabla_A = (AB_old%*%YYx2 - DYYx2)%*%B_old
+      nabla_B = (YYx2%*%t(AB_old) - t(DYYx2))%*%A_old
+    }
+    
+    #Perform proximal update with backtracking
+    AB_step_size_obj = AB_step_size_nested(DY,Y_lag,
+                                           A_old,B_old,nabla_A,nabla_B,
+                                           lambda_L2,lambda_R,omegas,
+                                           step_init,step_mult,step_max_iter)
+                                    
+    
+    A_new = AB_step_size_obj$A_new
+    B_new = AB_step_size_obj$B_new
+    AB_new = AB_step_size_obj$AB_new
+    step_convergence[iterations+1] = AB_step_size_obj$step_convergence
+    
+    
+    #Check convergence
+    iterations = iterations + 1
+    AB_dist = sqrt(sum((AB_new-AB_old)^2))/n
+    if(AB_dist < thresh){
+      convergence=0
+      break
+    }
+    if(iterations > max_iter){
+      convergence=1
+      break
+    }
+    if(print_dist & (iterations %% 100 == 0)){
+      print(AB_dist)
+    }
+    if(print_loss & (iterations %% 100 == 0)){
+      loss_new = AB_loss(DY,Y_lag,AB_new,lambda_R,A_new,B_new)
+      print(loss_new)
+    }
+  }
+  step_convergence = step_convergence[!is.na(step_convergence)]
+  list(A=A_new,B=B_new,AB = AB_new,iterations=iterations,
+       convergence=convergence,step_convergence=step_convergence,omegas=omegas)
+}
+                   
+
+
 #Accelerated version
 AB_step_size_accelerated = function(DY,Y_lag,A,B,nabla_A,nabla_B,
                         lambda_L2,lambda_L1=0,lambda_R=0,
@@ -408,11 +549,6 @@ VECM_SG_accelerated = function(A,B,Y,
 
 
 
-
-
-
-
-
 #Generate data
 set.seed(7406)
 t = 500
@@ -434,16 +570,16 @@ B_Johan = vecm_fit@V
 AB_Johan = C_Johan = A_Johan%*%t(B_Johan)
 
 
-#Testing PGD
+#Testing PGD nested
 A_init=A_Johan;B_init=B_Johan
-lambda_L2=0.2;lambda_L1=NULL;
+lambda_L2=1;
 step_init=1;step_mult=0.5
 step_max_iter=100;max_iter = 1000;thresh=1e-4
-test = VECM_SG(A=A_Johan,B=B_Johan,
-               Y=Y,lambda_L2=0.01,lambda_L1=0.01,lambda_R=1e-2,
+test = VECM_SG_nested(A=A_Johan,B=B_Johan,
+               Y=Y,lambda_L2=0.01,lambda_R=1e-2,
                step_init=1e-3,step_mult=0.5,
                step_max_iter=100,
-               max_iter = 1e7,thresh=1e-4,
+               max_iter = 1e7,thresh=1e-5,
                print_dist=F,print_loss = T)
 test$convergence
 mean(test$step_convergence)
@@ -455,7 +591,7 @@ test_tuned
 
 #Testing RCPP implementation
 test_Rcpp = VECM_SG_Rcpp(A=A_Johan,B=B_Johan,
-                         Y=Y,lambda_L2=0.01,lambda_L1=0.01,lambda_R=1e-2,
+                         Y=Y,lambda_L2=0.01,lambda_L1=0,lambda_R=1e-2,
                          step_init=1e-3,step_mult=0.5,
                          step_max_iter=100,
                          max_iter = 1e7,thresh=1e-5,
