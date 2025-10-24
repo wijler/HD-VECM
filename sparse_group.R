@@ -591,11 +591,7 @@ test_tuned
 
 #Testing RCPP implementation
 test_Rcpp = VECM_SG_Rcpp(A=A_Johan,B=B_Johan,
-<<<<<<< HEAD
-                         Y=Y,lambda_L2=0.01,lambda_L1=0,lambda_R=1e-2,
-=======
                          Y=Y,lambda_L2=0.01,omegas=matrix(-999,1,1),lambda_L1=0.01,lambda_R=1e-2,
->>>>>>> 7a9062272ec2784b1d0a2832ce8a1f8755aa2a58
                          step_init=1e-3,step_mult=0.5,
                          step_max_iter=100,
                          max_iter = 1e7,thresh=1e-5,
