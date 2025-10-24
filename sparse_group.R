@@ -2,7 +2,7 @@ rm(list=ls())
 setwd("C:/Github projects/HD-VECM")
 library(urca)
 source("source.R")
-#Rcpp::sourceCpp("sparse_group_fast.cpp")
+Rcpp::sourceCpp("sparse_group_fast.cpp")
 
 #Miscellaneous functions
 generate_VECM = function(n,t,burnin,A,B){
@@ -591,7 +591,11 @@ test_tuned
 
 #Testing RCPP implementation
 test_Rcpp = VECM_SG_Rcpp(A=A_Johan,B=B_Johan,
+<<<<<<< HEAD
                          Y=Y,lambda_L2=0.01,lambda_L1=0,lambda_R=1e-2,
+=======
+                         Y=Y,lambda_L2=0.01,omegas=matrix(-999,1,1),lambda_L1=0.01,lambda_R=1e-2,
+>>>>>>> 7a9062272ec2784b1d0a2832ce8a1f8755aa2a58
                          step_init=1e-3,step_mult=0.5,
                          step_max_iter=100,
                          max_iter = 1e7,thresh=1e-5,
@@ -606,22 +610,22 @@ test_Rcpp$A
 #Tuned results
 lambda_L2_grid = exp(seq(log(0.001),log(1),length.out=10))
 lambda_grid = matrix(lambda_L2_grid,ncol=1)
-test_tuned = VECM_SG_tuned(A=A_Johan,B=B_Johan,
-                           Y=Y,lambda_grid,lambda_R=1e-2,
-                           step_init=1e-3,step_mult=0.5,
-                           step_max_iter=100,
-                           max_iter = 1e7,thresh=1e-5,
-                           crit="BIC")
+VECM_L2 = VECM_SG_tuned_Rcpp(A=A_Johan,B=B_Johan,
+                                Y=Y,lambda_grid,-999,lambda_R=1e-2,
+                                step_init=1e-3,step_mult=0.5,
+                                step_max_iter=100,
+                                max_iter = 1e7,thresh=1e-5,
+                                crit="BIC")
+                           
 
 lambda_L1_grid = lambda_L2_grid
-lambda_grid = expand.grid(lambda_L1_grid,lambda_L2_grid)[,c(2,1)]
-VECM_L2_L1 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
-                             M_init = M_init,Y = Y,
-                             lambda_nuclear = 0.001,lambda_grid,
-                             rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
-                             step_size = "auto",step_init = 1,step_mult = 0.5,
-                             step_max_iter = 100,max_iter = 1000,
-                             ADMM_thresh = 1e-5,C_thresh = 1e-6,AB_thresh = 1e-5)
+lambda_grid = as.matrix(expand.grid(lambda_L1_grid,lambda_L2_grid)[,c(2,1)])
+VECM_L2_L1 = VECM_SG_tuned_Rcpp(A=A_Johan,B=B_Johan,
+                                      Y=Y,lambda_grid,-999,lambda_R=1e-2,
+                                      step_init=1e-3,step_mult=0.5,
+                                      step_max_iter=100,
+                                      max_iter = 1e7,thresh=1e-5,
+                                      crit="BIC")
 #Compute losses
 
 #VECM-L2
@@ -633,8 +637,8 @@ B_L2_norm = B_L2*A_L2[1,1]/A[1,1]
 r_L2 = sum(apply(A_L2,2,function(x) !all(x==0)))
 
 #VECM L2 + L1
-A_L2_L1 = VECM_L2_L1$A
-B_L2_L1 = VECM_L2_L1$B
+A_L2_L1 = VECM_L2_L1$As[,,1]
+B_L2_L1 = VECM_L2_L1$Bs[,,1]
 AB_L2_L1 = A_L2_L1%*%t(B_L2_L1)
 A_L2_L1_norm = A_L2_L1*A[1,1]/A_L2_L1[1,1]
 B_L2_L1_norm = B_L2_L1*A_L2_L1[1,1]/A[1,1]
