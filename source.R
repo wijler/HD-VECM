@@ -11,9 +11,13 @@ choose_r = function(vecm_fit,alpha=0.05){
   r = c(r_max:1)[min(which(vecm_test_stats>vecm_cvs))]
   r
 }
-softt_matrix = function(X,lambda){
+softt_matrix = function(X,lambda,omegas=NULL){
   X_sign = sign(X)
-  X_tmp = abs(X)-lambda
+  if(is.null(omegas)){
+    X_tmp = abs(X)-lambda
+  }else{
+    X_tmp = abs(X)-lambda*omegas
+  }
   X_tmp[X_tmp<0] = 0
   X_sign*X_tmp
 }

@@ -567,7 +567,7 @@ vecm_fit = ca.jo(Y,K=2)
 r = choose_r(vecm_fit,0.05)
 A_Johan = vecm_fit@W
 B_Johan = vecm_fit@V
-AB_Johan = C_Johan = A_Johan%*%t(B_Johan)
+C_init = AB_Johan = C_Johan = A_Johan%*%t(B_Johan)
 
 
 #Testing PGD nested
@@ -585,7 +585,6 @@ test$convergence
 mean(test$step_convergence)
 c(norm(Pi - AB_Johan,"F"),norm(Pi - test$AB,"F"))
 test$A
-test_tuned
 
 
 
@@ -600,7 +599,7 @@ test_Rcpp = VECM_SG_Rcpp(A=A_Johan,B=B_Johan,
 test_Rcpp$convergence
 mean(test_Rcpp$step_convergence)
 c(norm(Pi - AB_Johan,"F"),norm(Pi - test_Rcpp$AB,"F"))
-test_Rcpp$A
+test_Rcpp$B
 
 
 #Tuned results
@@ -633,8 +632,8 @@ B_L2_norm = B_L2*A_L2[1,1]/A[1,1]
 r_L2 = sum(apply(A_L2,2,function(x) !all(x==0)))
 
 #VECM L2 + L1
-A_L2_L1 = VECM_L2_L1$As[,,1]
-B_L2_L1 = VECM_L2_L1$Bs[,,1]
+A_L2_L1 = VECM_L2_L1$A
+B_L2_L1 = VECM_L2_L1$B
 AB_L2_L1 = A_L2_L1%*%t(B_L2_L1)
 A_L2_L1_norm = A_L2_L1*A[1,1]/A_L2_L1[1,1]
 B_L2_L1_norm = B_L2_L1*A_L2_L1[1,1]/A[1,1]
