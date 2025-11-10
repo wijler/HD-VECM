@@ -419,13 +419,13 @@ VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
     print(j)
   }
   if(crit=="MSE"){
-    lambdas_opt = lambda_grid[which.min(PI_MSEs),]
+    ind_opt = which.min(PI_MSEs)
   }else if(crit=="AIC"){
-    lambdas_opt = lambda_grid[which.min(AICs),]
+    ind_opt = which.min(AICs)
   }else if(crit=="BIC"){
-    lambdas_opt = lambda_grid[which.min(BICs),]
+    ind_opt = which.min(BICs)
   }
-  ind_opt = which.min(PI_MSEs)
+  lambdas_opt = lambda_grid[ind_opt,]
   A_opt = coefs[,,"A",ind_opt]
   B_opt = coefs[,,"B",ind_opt]
   C_opt = coefs[,,"C",ind_opt]
@@ -433,7 +433,8 @@ VECM_nuclear_tuned = function(C_init,A_init,B_init,M_init,Y,
   
   #return results
   list(lambda_opt = lambdas_opt,ind_opt=ind_opt,
-       A = A_opt, B = B_opt,C = C_opt, M = M_opt, 
+       A = A_opt, B = B_opt,C = C_opt, 
+       As = coefs[,,"A",],Bs = coefs[,,"B",],M = M_opt, 
        AICs = AICs,BICs = BICs, PI_MSEs = PI_MSEs)
 }
 
@@ -472,11 +473,11 @@ M_init = matrix(0,nrow(A_Johan),nrow(A_Johan))
 
 #Tuned results
 rho=0.001
-lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=30))
+lambda_L2_grid = rho*exp(seq(log(1e-3),0,length.out=10))
 lambda_grid = matrix(lambda_L2_grid,ncol=1)
 VECM_L2 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,B_init = B_Johan,
                              M_init = M_init,Y = Y,
-                             lambda_nuclear = 0.01,lambda_grid,crit="AIC",
+                             lambda_nuclear = 0.01,lambda_grid,crit="BIC",
                              rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
                              step_size = "auto",step_init = 1,step_mult = 0.5,
                              step_max_iter = 100,max_iter = 1000,
@@ -486,8 +487,8 @@ lambda_L1_grid = lambda_L2_grid
 lambda_grid = expand.grid(lambda_L1_grid,lambda_L2_grid)[,c(2,1)]
 VECM_L2_L1 = VECM_nuclear_tuned(C_init = C_Johan,A_init = A_Johan,
                                 B_init = B_Johan,M_init = M_init,Y = Y,
-                                lambda_nuclear = 0.001,lambda_grid,
-                                crit="AIC",
+                                lambda_nuclear = 0,lambda_grid,
+                                crit="BIC",
                                 rho = rho,rho_init=0.1,rho_mult = 0.5,mu=10,
                                 step_size = "auto",step_init = 1,step_mult = 0.5,
                                 step_max_iter = 100,max_iter = 1000,
@@ -504,8 +505,8 @@ B_L2_norm = B_L2*A_L2[1,1]/A[1,1]
 r_L2 = sum(apply(A_L2,2,function(x) !all(x==0)))
 
 #VECM L2 + L1
-A_L2_L1 = VECM_L2_L1$A
-B_L2_L1 = VECM_L2_L1$B
+A_L2_L1 = VECM_L2_L1$As[,,which.min(VECM_L2_L1$PI_MSEs)]
+B_L2_L1 = VECM_L2_L1$Bs[,,which.min(VECM_L2_L1$PI_MSEs)]
 AB_L2_L1 = A_L2_L1%*%t(B_L2_L1)
 A_L2_L1_norm = A_L2_L1*A[1,1]/A_L2_L1[1,1]
 B_L2_L1_norm = B_L2_L1*A_L2_L1[1,1]/A[1,1]

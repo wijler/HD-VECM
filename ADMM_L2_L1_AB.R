@@ -67,25 +67,20 @@ n = nrow(A)
 colnames(Y) = paste("x",1:n,sep="")
 vecm_fit = ca.jo(Y,K=2)
 r = choose_r(vecm_fit,0.05)
-A_Johan = vecm_fit@W[,1:r]
-B_Johan = vecm_fit@V[,1:r]
-C_init = C_Johan = A_Johan%*%t(B_Johan)
-M_init = matrix(0,n,n)
+A_init = A_Johan = vecm_fit@W
+B_init = B_Johan = vecm_fit@V
+C_Johan = A_Johan%*%t(B_Johan)
+MA_init = MB_init = matrix(0,n,n)
 rho = 1
-lambda_NN = 1; lambda_L1 = 0.1
+lambda_L2 = 1; lambda_L1 = 0.1
+omegas = NULL
 
 #Functions to update C
-prox_nuclear = function(X,lambda){
-  X_svd = svd(X)
-  d_softt = softt_matrix(X_svd$d,lambda)
-  X_new = X_svd$u%*%diag(d_softt)%*%t(X_svd$v)
-  list(X_new=X_new,d=d_softt)
-}
-
-ADMM_NN_L1 = function(Y,C_init,M_init,lambda_NN,lambda_L1,rho,
-                      adaptive_NN = FALSE,
+ADMM_L2_L1 = function(Y,A_init,B_init,MA_init,MB_init,
+                      lambda_L2,lambda_L1,
+                      rho,omegas=NULL,
                       eps_abs=1e-3,eps_rel=1e-3,max_iter=1000,
-                      print_resid = FALSE){
+                      print_resid = FALSE,adaptive_rho=T){
   
   #Transform data
   t=nrow(Y); n = ncol(Y)
@@ -93,68 +88,91 @@ ADMM_NN_L1 = function(Y,C_init,M_init,lambda_NN,lambda_L1,rho,
   Y_diff = diff(Y)
   Y_lag_cross = crossprod(Y_lag)/t
   DY_Y_lag = crossprod(Y_diff,Y_lag)/t
-  C1_den = solve(Y_lag_cross + diag(rho/2,n))
-  C1_cst = DY_Y_lag%*%C1_den
-  
-  if(adaptive_NN){
+
+  #Set omegas if needed
+  if(is.null(omegas)){
     omegas = 1/eigen(crossprod(Y)/t^2)$values
-  }else{
-    omegas=NULL
   }
   
   #Transform desired accuracies
   eps_abs_scaled = eps_abs*n
   
   #Initialize objects to update
-  C1_new = C_init
-  C2_new = C_init
-  C_new = C_init
-  M1_new = M_init
-  M2_new = M_init
-  
+  A1_new = A_new = A_init
+  B1_new = B_new = B_init
+  C_new = rbind(A_init,B_init)
+  MA_new = MA_init
+  MB_new = MB_init
+
   #Run ADMM algorithm
   counter = 0
   while(TRUE){
-    
     counter = counter+1
-    C1_old = C_new
-    C2_old = C_new
+    
+    #rho quantities
+    lambda_L1_div_rho = lambda_L1/rho
+    rho_div_2 = diag(rho/2,n)
+    rho_div_2_kron = diag(rho/2,n^2)
+    
+    #Update old parameters
+    A1_old = A1_new
+    B1_old = B1_new
+    A_old = A_new
+    B_old = B_new
     C_old = C_new
-    M1_old = M1_new
-    M2_old = M2_new
+    MA_old = MA_new
+    MB_old = MB_new
+
+    #Update A1
+    UA = A_old - MA_old/rho
+    A1_new = (DY_Y_lag%*%B1_old + (rho/2)*UA)%*%
+      solve(t(B1_old)%*%Y_lag_cross%*%B1_old +rho_div_2)
+    A1_new[abs(A1_new)<1e-10] = 0
     
-    #Update C1
-    U1 = C_old - M1_old/rho
-    C1_new = (rho/2)*U1%*%C1_den + C1_cst
+    #Update B1
+    UB = B_old - MB_old/rho
+    B1_new = matrix(solve(kronecker(crossprod(A1_new),Y_lag_cross) + rho_div_2_kron)%*%
+                      c(t(DY_Y_lag)%*%A1_new + (rho/2)*UB),n,n)
+    B1_new[abs(B1_new)<1e-10] = 0
     
-    #Update C2
-    U2 = C_old - M2_old/rho
-    U2_SVD = svd(U2)
-    d_softt = softt_matrix(U2_SVD$d,lambda_NN/rho,omegas)
-    C2_new = U2_SVD$u%*%diag(d_softt)%*%t(U2_SVD$v)
-    
-    #Update C3
-    W_tilde = (C1_new + M1_old/rho + C2_new + M2_old/rho)/2
-    C_new = softt_matrix(W_tilde,lambda_L1/(2*rho))
+    #Update A and B jointly
+    C1_new = rbind(A1_new,B1_new)
+    M_old = rbind(MA_old,MB_old)
+    WC = C1_new + M_old/rho
+    for(j in 1:n){
+      w_j = WC[,j]
+      c_softt_j = softt_matrix(w_j,lambda_L1_div_rho)
+      c_mult = (1-(lambda_L2*omegas[j]/rho)/sqrt(sum(c_softt_j^2)))
+      if(c_mult>0){
+        C_new[,j] = c_mult*c_softt_j
+      }else{
+        C_new[,j] = 0
+      }
+    }
+    A_new = C_new[1:n,]
+    B_new = C_new[(n+1):(2*n),]
     
     #Update M
-    M1_new = M1_old + rho*(C1_new - C_new)
-    M2_new = M2_old + rho*(C2_new - C_new)
+    MA_new = MA_old + rho*(A1_new - A_new)
+    MB_new = MB_old + rho*(B1_new - B_new)
+    M_new = rbind(MA_new,MB_new)
     
     #Compute primal and dual residuals
+    #dual_resid = rho*(C_old-C_new)
     dual_resid = rho*(C_new-C_old)
     dual_resid_norm = sqrt(sum(dual_resid^2))
-    primal_resid = 2*C_new - C1_new - C2_new
+    primal_resid = C1_new - C_new
     primal_resid_norm = sqrt(sum(primal_resid^2))
     if(print_resid){
       print(c(primal_resid_norm,dual_resid_norm))
     }
     
     #Check convergence
-    C_norms = c(norm(C1_new,"F"),norm(C2_new,"F"),norm(C_new,"F"))
+    C_norms = c(norm(C1_new,"F"),norm(C_new,"F"))
     eps_primal = eps_abs_scaled + eps_rel*max(C_norms)
-    M_norms = c(norm(M1_new,"F"),norm(M2_new,"F"))
-    eps_dual = eps_abs_scaled + eps_rel*max(M_norms)
+    M_norm = norm(M_new,"F")
+    eps_dual = eps_abs_scaled + eps_rel*M_norm
+    
     if(primal_resid_norm < eps_primal & dual_resid_norm < eps_dual){
       conv=0
       break
@@ -163,22 +181,36 @@ ADMM_NN_L1 = function(Y,C_init,M_init,lambda_NN,lambda_L1,rho,
       conv=1
       break
     }
+    
+    #Update rho
+    if(adaptive_rho){
+      if(primal_resid_norm > 10*dual_resid_norm){
+        rho = 2*rho
+      }else if(dual_resid_norm > 10*primal_resid_norm){
+        rho = rho/2
+      }
+    }
   }
-  rank = sum(d_softt!=0)
-  output = list(C1=C1_new,C2=C2_new,C=C_new,M1=M1_new,M2=M2_new,
-                d=d_softt,rank=rank,
-                conv=conv,iterations=counter)
+  
+  rank = sum(apply(C_new,2,function(x) !all(x==0)))
+  output = list(A=A_new,B=B_new,
+                A1=A1_new,B1 = B1_new,rank=rank,
+                M=M_new,conv=conv,iterations=counter)
   output
 }
 
-test = ADMM_NN_L1(Y,C_init,M_init,lambda_NN = 2,lambda_L1 = 0.0001,
-                  rho = 10,adaptive_NN = FALSE,max_iter = 1e5,
-                  eps_abs = 1e-5,eps_rel = 1e-5,print_resid = T)
-test$rank
-c(norm(Pi - C_init,"F"),norm(Pi - test$C1,"F"),norm(Pi - test$C2,"F"),norm(Pi - test$C,"F"))
-test$iterations
-test$C
+test = ADMM_L2_L1(Y,A_init,B_init,MA_init,MB_init,
+                  lambda_L2=0.01,lambda_L1=0.01,
+                  rho=10,omegas=NULL,
+                  eps_abs=1e-3,eps_rel=1e-3,max_iter=1e5,
+                  print_resid = T,adaptive_rho=T)
+
 test$conv
+test$rank
+C_hat = test$A%*%t(test$B)
+matplot(cbind(c(Pi),c(C_hat),c(C_Johan)),type="l")
+c(norm(Pi - C_Johan,"F"),norm(Pi - C_hat,"F"))
+test$iterations
 
 test_ssvd = rssvd(Y_diff,Y_lag,11)
 U = test_ssvd$U
