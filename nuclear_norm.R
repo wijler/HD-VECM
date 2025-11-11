@@ -30,12 +30,10 @@ choose_r = function(vecm_fit,alpha=0.05){
   r
 }
 BIC_value = function(Y,A,B){
-  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
-   + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
+  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y))) + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
 }
 AIC_value = function(Y,A,B){
-  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
-  + 2*(sum(A!=0)+sum(B!=0))
+  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y))) + 2*(sum(A!=0)+sum(B!=0))
 }
 trace_R2 = function(A_hat,A){
   

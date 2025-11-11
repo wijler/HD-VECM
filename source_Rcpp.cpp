@@ -9,6 +9,16 @@ void check(int i){
   Rcpp::Rcout << "Check " << i << std::endl;
 }
 
+int count_zero_columns(const arma::mat& B) {
+  int count = 0;
+  for (arma::uword j = 0; j < B.n_cols; ++j) {
+    if (all(B.col(j) == 0)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 arma::uvec change_indices(const arma::vec& x) {
   
   // handle edge case
@@ -38,7 +48,7 @@ int rank_Rcpp(arma::mat A){
 
 // [[Rcpp::export]]
 double BIC_Rcpp(const arma::mat& Y,const arma::mat& A,const arma::mat& B){
-  int t = Y.n_rows;
+  double t = Y.n_rows;
   arma::mat resid = Y.rows(1,t-1) - Y.rows(0,t-2) - Y.rows(0,t-2)*B*A.t();
   double SSR = arma::log_det_sympd(resid.t()*resid/t);
   double penalty = log(t)*(arma::accu(A!=0)+arma::accu(B!=0))/t;
@@ -47,7 +57,7 @@ double BIC_Rcpp(const arma::mat& Y,const arma::mat& A,const arma::mat& B){
 
 // [[Rcpp::export]]
 double AIC_Rcpp(const arma::mat& Y,const arma::mat& A,const arma::mat& B){
-  int t = Y.n_rows;
+  double t = Y.n_rows;
   arma::mat resid = Y.rows(1,t-1) - Y.rows(0,t-2) - Y.rows(0,t-2)*B*A.t();
   double SSR = arma::log_det_sympd(resid.t()*resid/t);
   double penalty = 2*(arma::accu(A!=0)+arma::accu(B!=0))/t;
@@ -283,7 +293,7 @@ Rcpp::List VECM_SG_tuned_Rcpp(const arma::mat& A,const arma::mat& B,
   double lambda_L1, lambda_L2;
   if(lambda_grid.n_cols == 1 ){
     lambda_L1 = 0;
-    }
+  }
   
   //Compute omegas if not user-supplied
   if (omegas(0) == -999) {
@@ -307,7 +317,7 @@ Rcpp::List VECM_SG_tuned_Rcpp(const arma::mat& A,const arma::mat& B,
     lambda_L2 = lambda_grid(j,0);
     if(lambda_grid.n_cols == 2){ 
       lambda_L1 = lambda_grid(j,1);
-      }
+    }
     Rcpp::List VECM_obj = VECM_SG_Rcpp(A_old,B_old,Y,lambda_L2,omegas,lambda_L1,
                                        lambda_R,step_init,step_mult,
                                        step_max_iter,max_iter,thresh,
@@ -357,5 +367,243 @@ Rcpp::List VECM_SG_tuned_Rcpp(const arma::mat& A,const arma::mat& B,
                                          Rcpp::_["ranks"] = r_AB,
                                          Rcpp::_["As"] = A_cube,
                                          Rcpp::_["Bs"] = B_cube);
+  return output;
+}
+
+// [[Rcpp::export]]
+Rcpp::List AB_L2_L1_Rcpp(const arma::mat& Y,arma::mat A_init,arma::mat B_init,
+                         arma::mat MA_init,arma::mat MB_init,
+                         const double lambda_L2,const double lambda_L1,
+                         double rho,arma::vec omegas,
+                         const double eps_abs=1e-3,const double eps_rel=1e-3,
+                         const int max_iter=1000,const bool print_resid = false,
+                         const bool adaptive_rho = true){
+  
+  //Transform data
+  int t=Y.n_rows;
+  int n = Y.n_cols;
+  int n_sq = n*n;
+  arma::mat Y_lag = Y.rows(0,t-2);
+  arma::mat Y_diff = Y.rows(1,t-1) - Y_lag;
+  arma::mat Y_lag_cross = Y_lag.t()*Y_lag/t;
+  arma::mat DY_Y_lag = Y_diff.t()*Y_lag/t;
+
+  //Compute omegas if not user-supplied
+  if (omegas(0) == -999) {
+    arma::vec eigval = arma::eig_sym(Y.t()*Y);
+    eigval = arma::reverse(eigval);
+    omegas = t*t/eigval;
+  }
+
+  //Transform desired accuracies
+  double eps_abs_scaled = eps_abs*n;
+  
+  //Initialize objects to update
+  arma::mat A1_new = A_init;
+  arma::mat A_new = A_init;
+  arma::mat B1_new = B_init;
+  arma::mat B_new = B_init;
+  arma::mat C_new = join_cols(A_init,B_init);
+  arma::mat MA_new = MA_init;
+  arma::mat MB_new = MB_init;
+  
+  arma::mat rho_div_2(n,n);
+  arma::mat rho_div_2_kron(n_sq,n_sq);
+
+  //Run ADMM algorithm
+  int counter = 0;
+  int conv = 0;
+  while(true){
+    counter++;
+    
+    //rho quantities
+    double lambda_L1_div_rho = lambda_L1/rho;
+    rho_div_2.diag() = arma::vec(n,arma::fill::value(rho/2));
+    rho_div_2_kron.diag() = arma::vec(n_sq,arma::fill::value(rho/2));
+
+    //Update old parameters
+    arma::mat A1_old = A1_new;
+    arma::mat B1_old = B1_new;
+    arma::mat A_old = A_new;
+    arma::mat B_old = B_new;
+    arma::mat C_old = C_new;
+    arma::mat MA_old = MA_new;
+    arma::mat MB_old = MB_new;
+      
+    //Update A1
+    arma::mat UA = A_old - MA_old/rho;
+    A1_new = (DY_Y_lag*B1_old + (rho/2)*UA)*
+        arma::inv(B1_old.t()*Y_lag_cross*B1_old +rho_div_2);
+    A1_new.elem(find(abs(A1_new) < 1e-10)).zeros();
+
+    //Update B1
+    arma::mat UB = B_old - MB_old/rho;
+    arma::vec B1_new_vec = arma::inv(arma::kron(A1_new.t()*A1_new,Y_lag_cross) + rho_div_2_kron)*
+      arma::vectorise(DY_Y_lag.t()*A1_new + (rho/2)*UB);
+    B1_new = arma::reshape(B1_new_vec,n,n);
+    B1_new.elem(find(abs(B1_new) < 1e-10)).zeros();
+
+    //Update A and B jointly
+    arma::mat C1_new = arma::join_cols(A1_new,B1_new);
+    arma::mat M_old = arma::join_cols(MA_old,MB_old);
+    arma::mat WC = C1_new + M_old/rho;
+    for(int j = 0; j<n; j++){
+      arma::vec w_j = WC.col(j);
+      arma::vec c_softt_j = softt_vec(w_j,lambda_L1_div_rho);
+      double c_mult = 1-(lambda_L2*omegas(j)/rho)/std::sqrt(arma::sum(arma::pow(c_softt_j,2)));
+      if(c_mult>0){
+        C_new.col(j) = c_mult*c_softt_j;
+      }else{
+        C_new.col(j).zeros();
+      }
+    }
+    A_new = C_new.rows(0,(n-1));
+    B_new = C_new.rows(n,2*n-1);
+
+    //Update M
+    MA_new = MA_old + rho*(A1_new - A_new);
+    MB_new = MB_old + rho*(B1_new - B_new);
+    arma::mat M_new = arma::join_cols(MA_new,MB_new);
+        
+    //Compute primal and dual residuals
+    arma::mat dual_resid = rho*(C_new-C_old);
+    double dual_resid_norm = std::sqrt(arma::accu(arma::pow(dual_resid,2)));
+    arma::mat primal_resid = C1_new - C_new;
+    double primal_resid_norm = std::sqrt(arma::accu(arma::pow(primal_resid,2)));
+    if(print_resid){
+      Rcpp::Rcout << primal_resid_norm << " " <<  dual_resid_norm << std::endl;
+    }
+          
+    //Check convergence
+    arma::vec C_norms = {std::sqrt(arma::accu(arma::pow(C1_new,2))),
+                         std::sqrt(arma::accu(arma::pow(C_new,2)))};
+    double eps_primal = eps_abs_scaled + eps_rel*arma::max(C_norms);
+    double M_norm = std::sqrt(arma::accu(arma::pow(M_new,2)));
+    double eps_dual = eps_abs_scaled + eps_rel*M_norm;
+    
+    if((primal_resid_norm < eps_primal) & (dual_resid_norm < eps_dual)){
+      break;
+    }
+    
+    if(counter == max_iter){
+      conv=1;
+      break;
+    }
+          
+    //Update rho
+    if(adaptive_rho){
+      if(primal_resid_norm > 10*dual_resid_norm){
+        rho = 2*rho;
+      }else if(dual_resid_norm > 10*primal_resid_norm){
+        rho = rho/2;
+      }
+    }
+  }
+  
+  int rank = count_zero_columns(C_new);
+  Rcpp::List output = Rcpp::List::create(Rcpp::_["A"] = A_new,
+                                         Rcpp::_["B"] = B_new,
+                                         Rcpp::_["A1"] = A1_new,
+                                         Rcpp::_["B1"] = B1_new,
+                                         Rcpp::_["rank"] = rank,
+                                         Rcpp::_["MA"] = MA_new,
+                                         Rcpp::_["MB"] = MB_new,
+                                         Rcpp::_["conv"] = conv,
+                                         Rcpp::_["iterations"] = counter);
+    return output;
+}
+
+// [[Rcpp::export]]
+Rcpp::List AB_L2_L1_tuned_Rcpp(const arma::mat& Y,arma::mat A_init,arma::mat B_init,
+                          arma::mat MA_init,arma::mat MB_init,
+                          const arma::mat lambda_grid,
+                          double rho,arma::vec omegas,
+                          const double eps_abs=1e-3,const double eps_rel=1e-3,
+                          const int max_iter=1000,const bool adaptive_rho = true,
+                          const std::string crit = "AIC"){
+  
+  int t = Y.n_rows;
+  int n = Y.n_cols;
+  int n_lambdas = lambda_grid.n_rows;
+  arma::uvec lambda_L2_changes = change_indices(lambda_grid.col(0));
+  double lambda_L1, lambda_L2;
+  if(lambda_grid.n_cols == 1 ){
+    lambda_L1 = 0;
+  }
+  
+  //Compute omegas if not user-supplied
+  if (omegas(0) == -999) {
+    arma::vec eigval = arma::eig_sym(Y.t()*Y);
+    eigval = arma::reverse(eigval);
+    omegas = t*t/eigval;
+  }
+
+  arma::field<arma::cube> coefs(n_lambdas);
+  arma::vec BICs = arma::vec(n_lambdas);
+  arma::vec AICs = BICs;
+  arma::vec r = BICs;
+  arma::vec conv = BICs;
+  arma::vec iters = BICs;
+  arma::cube coef_j = arma::cube(n,n,4);
+  for(int j=0; j<n_lambdas; j++){
+    
+    lambda_L2 = lambda_grid(j,0);
+    if(lambda_grid.n_cols==2){ 
+      lambda_L1 = lambda_grid(j,1);
+    }
+    
+    Rcpp::List VECM_obj = AB_L2_L1_Rcpp(Y,A_init,B_init,MA_init,MB_init,
+                                        lambda_L2,lambda_L1,rho,omegas,
+                                        eps_abs,eps_rel,max_iter,false,adaptive_rho);
+                                   
+    
+    coef_j.slice(0) = Rcpp::as<arma::mat>(VECM_obj["A"]);
+    coef_j.slice(1) = Rcpp::as<arma::mat>(VECM_obj["B"]);
+    coef_j.slice(2) = Rcpp::as<arma::mat>(VECM_obj["MA"]);
+    coef_j.slice(3) = Rcpp::as<arma::mat>(VECM_obj["MA"]);
+    coefs(j) = coef_j;
+    
+    //Update initializers for warm start
+    if(arma::any(lambda_L2_changes == j)){
+      int last_lambda_index = arma::min(arma::find(lambda_grid.col(0)==lambda_grid(j-1,0)));
+      A_init = coefs(last_lambda_index).slice(0);
+      B_init = coefs(last_lambda_index).slice(1);
+      MA_init = coefs(last_lambda_index).slice(2);
+      MB_init = coefs(last_lambda_index).slice(3);
+    }else{
+      A_init = coef_j.slice(0);
+      B_init = coef_j.slice(1);
+      MA_init = coef_j.slice(2);
+      MB_init = coef_j.slice(3);
+    }
+    
+    //Compute BICs
+    r(j) = VECM_obj["rank"];
+    BICs(j) = BIC_Rcpp(Y,coef_j.slice(0),coef_j.slice(1));
+    AICs(j) = AIC_Rcpp(Y,coef_j.slice(0),coef_j.slice(1));
+    conv(j) = VECM_obj["conv"];
+    iters(j) = VECM_obj["iterations"];
+    Rcpp::Rcout << j << std::endl;
+  }
+  
+  //Extract tuned coefficients
+  unsigned int ind_opt=0;
+  if(crit=="AIC"){
+    ind_opt = arma::index_min(AICs);
+  }else if(crit=="BIC"){
+    ind_opt = arma::index_min(BICs);
+  }
+  arma::rowvec lambdas_opt = lambda_grid.row(ind_opt);
+  
+  //return results
+  Rcpp::List output = Rcpp::List::create(Rcpp::_["lambda_opt"]=lambdas_opt,
+                                         Rcpp::_["ind_opt"]=ind_opt,
+                                         Rcpp::_["A"] = coefs(ind_opt).slice(0),
+                                         Rcpp::_["B"] = coefs(ind_opt).slice(1),
+                                         Rcpp::_["r"] = r(ind_opt),
+                                         Rcpp::_["AICs"] = AICs,
+                                         Rcpp::_["BICs"] = BICs,
+                                         Rcpp::_["ranks"] = r,
+                                         Rcpp::_["coefs"] = coefs);
   return output;
 }

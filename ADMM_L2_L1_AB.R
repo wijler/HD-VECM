@@ -3,54 +3,6 @@ setwd("C:/Github projects/HD-VECM")
 library(urca)
 source("source.R")
 
-#Miscellaneous functions
-generate_VECM = function(n,t,burnin,A,B){
-  
-  t_total = t+burnin
-  Pi = A%*%t(B)
-  Phi_1 = diag(n) + Pi
-  eps = matrix(rnorm(t_total*n),t_total,n)
-  Y = matrix(0,t_total,n)
-  for(s in 2:t_total){
-    Y[s,] = Phi_1%*%Y[s-1,] + eps[s,]
-  }
-  Y = head(Y,t)
-  list(Y=Y,Pi=Pi)
-}
-choose_r = function(vecm_fit,alpha=0.05){
-  alphas = c(0.1,0.05,0.01)
-  if(!(alpha %in% alphas)){
-    stop("invalid significance level chosen")
-  }
-  ind = which(alphas==alpha)
-  n_stats = length(vecm_fit@teststat)
-  vecm_test_stats = vecm_fit@teststat[n_stats:1]
-  vecm_cvs = vecm_fit@cval[n_stats:1,ind]
-  r = min(which(vecm_test_stats<vecm_cvs)) - 1
-  r
-}
-BIC_value = function(Y,A,B){
-  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
-   + log(nrow(Y))*(sum(A!=0)+sum(B!=0))/nrow(Y) 
-}
-AIC_value = function(Y,A,B){
-  log(det(crossprod(diff(Y) - Y[-nrow(Y),]%*%B%*%t(A))/nrow(Y)))
-  + 2*(sum(A!=0)+sum(B!=0))
-}
-trace_R2 = function(A_hat,A){
-  
-  zero_cols = apply(A_hat,2,function(x) all(x==0))
-  if(all(!zero_cols)){
-    max_r = ncol(A_hat)
-  }else{
-    max_r = min(which(zero_cols))-1
-  }
-  A_hat_sub = A_hat[,1:max_r]
-  P_A_hat = A_hat_sub%*%solve(crossprod(A_hat_sub))%*%t(A_hat_sub)
-  stat = sum((P_A_hat%*%A)^2)/sum(A^2)
-  stat
-}
-
 #Generate data
 set.seed(7406)
 t = 500
