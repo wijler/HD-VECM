@@ -84,6 +84,16 @@ prox_nuclear = function(X,lambda){
   X_new = X_svd$u%*%diag(d_softt)%*%t(X_svd$v)
   list(X_new=X_new,d=d_softt)
 }
+rank_detect = function(A,B){
+  C = rbind(A,B)
+  rank=0
+  for(j in 1:ncol(C)){
+    if(!all(C[,j]==0)){
+      rank=rank+1
+    }
+  }
+  rank
+}
 
 #DGP functions
 draw_VECM = function(t,spec="HD_sparse",a=-0.4){
@@ -638,7 +648,7 @@ AB_NN_L2_L1_tuned = function(C_init,A_init,B_init,M_init,Y,
     VECM_obj = AB_NN_L2_L1(C_init = C_init,A_init = A_init,B_init = B_init,
                             M_init = M_init,Y = Y,lambda_nuclear = lambda_nuclear,
                             lambda_L2 = lambda_L2,lambda_L1 = lambda_L1,
-                            rho = rho,rho_init=rho_init,rho_mult = rho_mut,
+                            rho = rho,rho_init=rho_init,rho_mult = rho_mult,
                             mu=mu,step_size = step_size,step_init = step_init,
                             step_mult = step_mult,step_max_iter = step_max_iter,
                             max_iter = max_iter,ADMM_thresh = ADMM_thresh,

@@ -9,10 +9,10 @@ void check(int i){
   Rcpp::Rcout << "Check " << i << std::endl;
 }
 
-int count_zero_columns(const arma::mat& B) {
+int count_nonzero_columns(const arma::mat& B) {
   int count = 0;
   for (arma::uword j = 0; j < B.n_cols; ++j) {
-    if (all(B.col(j) == 0)) {
+    if (!all(B.col(j) == 0)) {
       ++count;
     }
   }
@@ -500,7 +500,7 @@ Rcpp::List AB_L2_L1_Rcpp(const arma::mat& Y,arma::mat A_init,arma::mat B_init,
     }
   }
   
-  int rank = count_zero_columns(C_new);
+  int rank = count_nonzero_columns(C_new);
   Rcpp::List output = Rcpp::List::create(Rcpp::_["A"] = A_new,
                                          Rcpp::_["B"] = B_new,
                                          Rcpp::_["A1"] = A1_new,
@@ -604,6 +604,8 @@ Rcpp::List AB_L2_L1_tuned_Rcpp(const arma::mat& Y,arma::mat A_init,arma::mat B_i
                                          Rcpp::_["AICs"] = AICs,
                                          Rcpp::_["BICs"] = BICs,
                                          Rcpp::_["ranks"] = r,
+                                         Rcpp::_["conv"] = conv,
+                                         Rcpp::_["iterations"] = iters,
                                          Rcpp::_["coefs"] = coefs);
   return output;
 }
